@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "resolve_vin",
+    "resolve_model",
     "scrape_model_data",
     "enqueue_scrape",
     "apply_model_to_vehicles",
@@ -129,6 +130,22 @@ def resolve_vin(vin: str, webhook_url: str = "") -> tuple[Vehicle, str]:
     if vm:
         _link_model(vehicle, vm)
     return vehicle, STATUS_PROCESSING
+
+
+def resolve_model(
+    make: str, model: str, year: int | None = None, webhook_url: str = ""
+) -> tuple[VehicleModel | None, str]:
+    """Resolve market data by MODEL directly (no VIN needed).
+
+    Useful for searching new cars by make/model/year. Returns (vehicle_model,
+    status): "ready" if fresh cached data exists, or "processing" if a scrape was
+    enqueued (a stale VehicleModel may be returned meanwhile, or None).
+    """
+    vm = _find_model(make, model, year)
+    if is_fresh(vm):
+        return vm, STATUS_READY
+    enqueue_scrape(make, model, year, webhook_url=webhook_url)
+    return vm, STATUS_PROCESSING
 
 
 def enqueue_scrape(
@@ -232,6 +249,9 @@ def scrape_model_data(
             trim="",  # make/model/year granularity (the Edmunds URL ignores trim)
             defaults={
                 "estimated_price": result.estimated_price,
+                "price_low": result.price_low,
+                "price_high": result.price_high,
+                "price_kind": result.price_kind,
                 "currency": result.currency or "USD",
                 "source": source,
                 "source_url": result.source_url,

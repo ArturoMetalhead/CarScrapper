@@ -38,6 +38,9 @@ class ScrapedVehicle:
     trim: str = ""
     mileage: int | None = None
     estimated_price: Decimal | None = None
+    price_low: Decimal | None = None
+    price_high: Decimal | None = None
+    price_kind: str = ""
     currency: str = "USD"
     source_url: str = ""
     raw_data: dict[str, Any] = field(default_factory=dict)

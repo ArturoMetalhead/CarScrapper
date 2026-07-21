@@ -26,6 +26,9 @@ from .registry import register
 _PRICE_MIN = 1000
 _PRICE_MAX = 200000
 _PRICE_RE = re.compile(r"\$\s?(\d{1,3}(?:,\d{3})+)")
+# Edmunds' own labeled values: "Edmunds suggests you pay $X" and a "$X - $Y" range.
+_SUGGEST_RE = re.compile(r"suggests?\s+you\s+pay[^$]{0,25}\$([\d,]{4,})", re.I)
+_RANGE_RE = re.compile(r"\$([\d,]{4,})\s*[-–—]\s*\$([\d,]{4,})")
 
 
 @register("edmunds")
@@ -49,32 +52,59 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
     def parse_model(
         self, response, make: str, model: str, year=None, trim: str = ""
     ) -> ScrapedVehicle:
-        """Estimate the model/year market price by aggregating the listings.
+        """Extract the model/year market price using Edmunds' own numbers.
 
-        The Edmunds model page shows many listings (`.heading-3` by default,
-        configurable via selectors['model_price_nodes']). We take the MEDIAN of
-        those prices, robust against outliers (e.g. another year's model leaking
-        into the page).
+        Priority:
+          1. "Edmunds suggests you pay $X" (new cars) -> headline price.
+          2. A "$X - $Y" range (MSRP range for new cars) -> midpoint as headline.
+          3. Median of the used listings (`.heading-3`, configurable via
+             selectors['model_price_nodes']) -> headline for used cars.
+
+        `price_low`/`price_high` hold the range (explicit if present, otherwise
+        the listing spread) and `price_kind` records the provenance.
         """
         soup = BeautifulSoup(response.text, "lxml")
         selectors = self.source.selectors or {}
+        text = soup.get_text(" ", strip=True)
 
-        # 1) Prices from listing nodes (more reliable than the full text).
+        # 1) Edmunds' suggested price (new cars).
+        suggested = None
+        m = _SUGGEST_RE.search(text)
+        if m:
+            suggested = self._num(m.group(1))
+
+        # 2) Price range "$low - $high" (e.g. MSRP range for new cars).
+        low = high = None
+        for rm in _RANGE_RE.finditer(text):
+            lo, hi = self._num(rm.group(1)), self._num(rm.group(2))
+            if lo is not None and hi is not None and lo <= hi:
+                low, high = lo, hi
+                break
+
+        # 3) Used listings: median of listing prices (fallback headline).
         selector = selectors.get("model_price_nodes", ".heading-3")
         prices: list[Decimal] = []
         for node in soup.select(selector):
             price = self._valid_price(node.get_text(" ", strip=True))
             if price is not None:
                 prices.append(price)
+        listing_median = Decimal(round(median(prices))) if prices else None
 
-        # 2) Fallback: regex over the whole text if the nodes yielded nothing.
-        if not prices:
-            for m in _PRICE_RE.finditer(soup.get_text(" ", strip=True)):
-                price = self._valid_price(m.group(0))
-                if price is not None:
-                    prices.append(price)
+        # Pick the headline price and record where it came from.
+        if suggested is not None:
+            estimated, kind = suggested, "edmunds_suggested"
+        elif low is not None and high is not None:
+            estimated, kind = Decimal(round((low + high) / 2)), "msrp_range_mid"
+        elif listing_median is not None:
+            estimated, kind = listing_median, "used_listings_median"
+        else:
+            estimated, kind = None, ""
 
-        estimated = Decimal(round(median(prices))) if prices else None
+        # If there was no explicit range, use the listing spread as the range.
+        if low is None and prices:
+            low = min(prices)
+        if high is None and prices:
+            high = max(prices)
 
         return ScrapedVehicle(
             vin="",
@@ -83,16 +113,28 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
             year=year,
             trim=trim or "",
             estimated_price=estimated,
+            price_low=low,
+            price_high=high,
+            price_kind=kind,
             currency="USD",
             source_url=response.url,
             raw_data={
-                "method": "listing_median",
-                "samples": len(prices),
-                "min": float(min(prices)) if prices else None,
-                "max": float(max(prices)) if prices else None,
-                "median": float(estimated) if estimated is not None else None,
+                "price_kind": kind,
+                "suggested": float(suggested) if suggested is not None else None,
+                "range": [float(low), float(high)] if low is not None and high is not None else None,
+                "listing_samples": len(prices),
+                "listing_median": float(listing_median) if listing_median is not None else None,
             },
         )
+
+    @staticmethod
+    def _num(raw: str) -> Decimal | None:
+        """Parse a comma-thousands number and validate against the price range."""
+        try:
+            value = Decimal(raw.replace(",", ""))
+        except (InvalidOperation, ValueError):
+            return None
+        return value if _PRICE_MIN <= value <= _PRICE_MAX else None
 
     @staticmethod
     def _valid_price(text: str) -> Decimal | None:

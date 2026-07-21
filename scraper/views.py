@@ -6,13 +6,15 @@ from rest_framework.views import APIView
 
 from .models import ScrapeJob, ScraperSource, Vehicle
 from .serializers import (
+    ModelLookupSerializer,
     ScraperSourceSerializer,
     ScrapeJobSerializer,
+    VehicleModelSerializer,
     VehicleSerializer,
     VinBatchSerializer,
     VinLookupSerializer,
 )
-from .services import STATUS_READY, VinDecodeError, resolve_vin
+from .services import STATUS_READY, VinDecodeError, resolve_model, resolve_vin
 
 
 class HealthView(APIView):
@@ -87,6 +89,39 @@ class VehiclePrewarmView(APIView):
                 results.append({"vin": vin, "status": "error", "detail": str(exc)})
 
         return Response({"results": results}, status=status.HTTP_202_ACCEPTED)
+
+
+class ModelLookupView(APIView):
+    """Fast lookup by MODEL (no VIN needed) — handy for new cars.
+
+    POST /api/models/lookup/
+    Body: {"make": "Mazda", "model": "CX-5", "year": 2026, "webhook_url": "..."}
+
+    - Cached and fresh -> 200 with the model data (suggested price + range).
+    - Otherwise -> enqueue the scraping and respond 202 "processing"; the worker
+      notifies via webhook when done.
+    """
+
+    def post(self, request):
+        payload = ModelLookupSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        make = payload.validated_data["make"]
+        model = payload.validated_data["model"]
+        year = payload.validated_data.get("year")
+        webhook_url = payload.validated_data.get("webhook_url", "")
+
+        vm, state = resolve_model(make, model, year, webhook_url=webhook_url)
+        data = VehicleModelSerializer(vm).data if vm else None
+        if state == STATUS_READY:
+            return Response({"status": STATUS_READY, "model_data": data})
+        return Response(
+            {
+                "status": state,
+                "model_data": data,
+                "detail": "Market data in progress. You will be notified via webhook when ready.",
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
 
 
 class VehicleStatusView(APIView):

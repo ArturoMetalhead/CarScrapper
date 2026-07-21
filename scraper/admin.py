@@ -15,9 +15,12 @@ class ScraperSourceAdmin(admin.ModelAdmin):
 
 @admin.register(VehicleModel)
 class VehicleModelAdmin(admin.ModelAdmin):
-    list_display = ("make", "model", "year", "trim", "estimated_price", "source", "updated_at")
+    list_display = (
+        "make", "model", "year", "estimated_price", "price_low", "price_high",
+        "price_kind", "source", "updated_at",
+    )
     search_fields = ("make", "model")
-    list_filter = ("make", "year", "source")
+    list_filter = ("make", "year", "price_kind", "source")
     readonly_fields = ("created_at", "updated_at")
 
 

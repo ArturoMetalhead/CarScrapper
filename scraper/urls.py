@@ -3,6 +3,7 @@ from django.urls import path
 
 from .views import (
     HealthView,
+    ModelLookupView,
     SourceListView,
     VehicleDetailView,
     VehicleListView,
@@ -19,6 +20,7 @@ urlpatterns = [
     path("sources/", SourceListView.as_view(), name="source-list"),
     path("worker/", WorkerControlView.as_view(), name="worker-status"),
     path("worker/<str:action>/", WorkerControlView.as_view(), name="worker-control"),
+    path("models/lookup/", ModelLookupView.as_view(), name="model-lookup"),
     path("vehicles/", VehicleListView.as_view(), name="vehicle-list"),
     path("vehicles/lookup/", VehicleLookupView.as_view(), name="vehicle-lookup"),
     path("vehicles/prewarm/", VehiclePrewarmView.as_view(), name="vehicle-prewarm"),

@@ -3,7 +3,7 @@ import re
 
 from rest_framework import serializers
 
-from .models import ScrapeJob, ScraperSource, Vehicle
+from .models import ScrapeJob, ScraperSource, Vehicle, VehicleModel
 
 # A VIN is 17 alphanumeric characters, excluding the letters I, O and Q.
 VIN_REGEX = re.compile(r"^[A-HJ-NPR-Z0-9]{17}$", re.IGNORECASE)
@@ -37,13 +37,41 @@ class VehicleSerializer(serializers.ModelSerializer):
     market_updated_at = serializers.DateTimeField(
         source="vehicle_model.updated_at", read_only=True, default=None
     )
+    # Price range and provenance, inherited from the linked model data.
+    price_low = serializers.DecimalField(
+        source="vehicle_model.price_low", max_digits=12, decimal_places=2,
+        read_only=True, default=None,
+    )
+    price_high = serializers.DecimalField(
+        source="vehicle_model.price_high", max_digits=12, decimal_places=2,
+        read_only=True, default=None,
+    )
+    price_kind = serializers.CharField(
+        source="vehicle_model.price_kind", read_only=True, default=None
+    )
 
     class Meta:
         model = Vehicle
         fields = [
             "id", "vin", "make", "model", "year", "trim", "body_class",
-            "mileage", "estimated_price", "currency", "source", "source_name",
-            "source_url", "market_updated_at", "raw_data", "created_at", "updated_at",
+            "mileage", "estimated_price", "price_low", "price_high", "price_kind",
+            "currency", "source", "source_name", "source_url", "market_updated_at",
+            "raw_data", "created_at", "updated_at",
+        ]
+        read_only_fields = fields
+
+
+class VehicleModelSerializer(serializers.ModelSerializer):
+    """Market data by model (for model-based lookups)."""
+
+    source_name = serializers.CharField(source="source.name", read_only=True, default=None)
+
+    class Meta:
+        model = VehicleModel
+        fields = [
+            "id", "make", "model", "year", "trim", "estimated_price",
+            "price_low", "price_high", "price_kind", "currency",
+            "source", "source_name", "source_url", "raw_data", "updated_at",
         ]
         read_only_fields = fields
 
@@ -87,3 +115,12 @@ class VinBatchSerializer(serializers.Serializer):
 
     def validate_vins(self, value: list[str]) -> list[str]:
         return [_validate_vin(v) for v in value]
+
+
+class ModelLookupSerializer(serializers.Serializer):
+    """Validates a model lookup (search by make/model/year, no VIN needed)."""
+
+    make = serializers.CharField(max_length=100)
+    model = serializers.CharField(max_length=100)
+    year = serializers.IntegerField(required=False, allow_null=True, min_value=1900, max_value=2100)
+    webhook_url = serializers.URLField(required=False, allow_blank=True, default="")

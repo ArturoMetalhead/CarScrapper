@@ -125,8 +125,24 @@ class VehicleModel(models.Model):
     year = models.PositiveIntegerField("Year", null=True, blank=True)
     trim = models.CharField("Trim", max_length=120, blank=True, default="")
 
+    # Headline market price (Edmunds' suggested price for new cars, or the
+    # median of used listings). `price_low`/`price_high` hold the range and
+    # `price_kind` records where the number came from.
     estimated_price = models.DecimalField(
         "Estimated price", max_digits=12, decimal_places=2, null=True, blank=True
+    )
+    price_low = models.DecimalField(
+        "Price (low)", max_digits=12, decimal_places=2, null=True, blank=True
+    )
+    price_high = models.DecimalField(
+        "Price (high)", max_digits=12, decimal_places=2, null=True, blank=True
+    )
+    price_kind = models.CharField(
+        "Price kind",
+        max_length=32,
+        blank=True,
+        default="",
+        help_text="How estimated_price was obtained: edmunds_suggested, msrp_range_mid, used_listings_median.",
     )
     currency = models.CharField("Currency", max_length=8, default="USD", blank=True)
 

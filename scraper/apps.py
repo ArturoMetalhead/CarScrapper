@@ -7,21 +7,20 @@ from django.apps import AppConfig
 class ScraperConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "scraper"
-    verbose_name = "Scraper de vehículos"
+    verbose_name = "Vehicle scraper"
 
     def ready(self):
-        """Arranca el worker de scraping junto a la API (si está habilitado).
+        """Start the scraping worker alongside the API (if enabled).
 
-        Se salta el arranque en comandos de gestión (migrate, shell, tests, el
-        propio worker en primer plano, etc.) y evita duplicarlo con el
-        autoreloader de runserver.
+        Skips startup for management commands (migrate, shell, tests, the
+        foreground worker itself, etc.) and avoids duplicating it with
+        runserver's autoreloader.
         """
         from django.conf import settings
 
         if not getattr(settings, "SCRAPER_WORKER_AUTOSTART", True):
             return
-
-        if not self._debe_arrancar():
+        if not self._should_start():
             return
 
         from .worker import controller
@@ -29,26 +28,26 @@ class ScraperConfig(AppConfig):
         controller.start()
 
     @staticmethod
-    def _debe_arrancar() -> bool:
+    def _should_start() -> bool:
         argv = sys.argv
 
-        # Comandos donde NO queremos el worker de fondo.
-        comandos_excluidos = {
+        # Commands where we do NOT want the background worker.
+        excluded = {
             "migrate", "makemigrations", "collectstatic", "shell", "dbshell",
             "test", "createsuperuser", "seed_sources", "run_scrape_worker",
             "warm_nodriver_profile", "loaddata", "dumpdata", "check",
         }
-        if any(cmd in argv for cmd in comandos_excluidos):
+        if any(cmd in argv for cmd in excluded):
             return False
 
         if "runserver" in argv:
-            # Con autoreload, solo el proceso hijo (RUN_MAIN=true) debe arrancarlo;
-            # el proceso padre (reloader) no. Con --noreload no hay RUN_MAIN.
+            # With autoreload only the child process (RUN_MAIN=true) should start
+            # it, not the reloader parent. With --noreload there is no RUN_MAIN.
             if os.environ.get("RUN_MAIN") == "true":
                 return True
             if "--noreload" in argv:
                 return True
             return False
 
-        # Servidores WSGI/ASGI (gunicorn, uvicorn, daphne): sin 'runserver' en argv.
+        # WSGI/ASGI servers (gunicorn, uvicorn, daphne): no 'runserver' in argv.
         return True

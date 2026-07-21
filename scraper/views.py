@@ -1,4 +1,4 @@
-"""Vistas de la API del scraper."""
+"""Scraper API views."""
 from rest_framework import status
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.response import Response
@@ -16,48 +16,46 @@ from .services import STATUS_READY, VinDecodeError, resolve_vin
 
 
 class HealthView(APIView):
-    """Endpoint simple para verificar que la API está viva."""
+    """Simple liveness endpoint."""
 
     def get(self, request):
         return Response({"status": "ok"})
 
 
 class VehicleLookupView(APIView):
-    """Busca un vehículo por VIN de forma rápida (caché + scraping en fondo).
+    """Fast VIN lookup (cache + background scraping).
 
     POST /api/vehicles/lookup/
-    Body: {"vin": "1HGCM82633A004352", "webhook_url": "https://... (opcional)"}
+    Body: {"vin": "1HGCM82633A004352", "webhook_url": "https://... (optional)"}
 
-    - Si el dato de mercado está en caché y fresco -> 200 con el vehículo.
-    - Si no -> decodifica el VIN (NHTSA), encola el scraping por modelo y responde
-      202 "processing". Cuando el worker termine, avisa por webhook; mientras
-      tanto el frontend puede consultar GET /api/vehicles/<vin>/.
+    - If the market data is cached and fresh -> 200 with the vehicle.
+    - Otherwise -> decode the VIN (NHTSA), enqueue the per-model scraping and
+      respond 202 "processing". When the worker finishes it notifies via webhook;
+      meanwhile the frontend can poll GET /api/vehicles/<vin>/.
     """
 
     def post(self, request):
-        entrada = VinLookupSerializer(data=request.data)
-        entrada.is_valid(raise_exception=True)
-        vin = entrada.validated_data["vin"]
-        webhook_url = entrada.validated_data.get("webhook_url", "")
+        payload = VinLookupSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        vin = payload.validated_data["vin"]
+        webhook_url = payload.validated_data.get("webhook_url", "")
 
         try:
-            vehiculo, estado = resolve_vin(vin, webhook_url=webhook_url)
+            vehicle, state = resolve_vin(vin, webhook_url=webhook_url)
         except VinDecodeError as exc:
-            return Response(
-                {"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        datos = VehicleSerializer(vehiculo).data
-        if estado == STATUS_READY:
-            return Response({"status": STATUS_READY, "vehicle": datos})
+        data = VehicleSerializer(vehicle).data
+        if state == STATUS_READY:
+            return Response({"status": STATUS_READY, "vehicle": data})
 
         return Response(
             {
-                "status": estado,
-                "vehicle": datos,
+                "status": state,
+                "vehicle": data,
                 "detail": (
-                    "Datos de mercado en proceso. Se notificará por webhook al "
-                    "terminar; también puedes consultar el VIN más tarde."
+                    "Market data in progress. You will be notified via webhook when "
+                    "ready; you can also look up the VIN later."
                 ),
                 "poll_url": request.build_absolute_uri(f"/api/vehicles/{vin}/"),
             },
@@ -66,60 +64,58 @@ class VehicleLookupView(APIView):
 
 
 class VehiclePrewarmView(APIView):
-    """Precarga (pre-scraping proactivo) de una lista de VINs.
+    """Prewarm (proactive scraping) of a list of VINs.
 
     POST /api/vehicles/prewarm/
-    Body: {"vins": ["...", "..."], "webhook_url": "https://... (opcional)"}
+    Body: {"vins": ["...", "..."], "webhook_url": "https://... (optional)"}
 
-    Decodifica cada VIN y encola su modelo. Devuelve el estado por VIN (ready si
-    ya estaba en caché, processing si se encoló, o error de decodificación).
+    Decodes each VIN and enqueues its model. Returns the per-VIN state (ready if
+    already cached, processing if enqueued, or a decode error).
     """
 
     def post(self, request):
-        entrada = VinBatchSerializer(data=request.data)
-        entrada.is_valid(raise_exception=True)
-        webhook_url = entrada.validated_data.get("webhook_url", "")
+        payload = VinBatchSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        webhook_url = payload.validated_data.get("webhook_url", "")
 
-        resultados = []
-        for vin in entrada.validated_data["vins"]:
+        results = []
+        for vin in payload.validated_data["vins"]:
             try:
-                _, estado = resolve_vin(vin, webhook_url=webhook_url)
-                resultados.append({"vin": vin, "status": estado})
+                _, state = resolve_vin(vin, webhook_url=webhook_url)
+                results.append({"vin": vin, "status": state})
             except VinDecodeError as exc:
-                resultados.append({"vin": vin, "status": "error", "detail": str(exc)})
+                results.append({"vin": vin, "status": "error", "detail": str(exc)})
 
-        return Response({"results": resultados}, status=status.HTTP_202_ACCEPTED)
+        return Response({"results": results}, status=status.HTTP_202_ACCEPTED)
 
 
 class VehicleStatusView(APIView):
-    """Estado de resolución de un VIN. GET /api/vehicles/<vin>/status/
+    """Resolution state of a VIN. GET /api/vehicles/<vin>/status/
 
-    Devuelve si el vehículo ya está resuelto y el estado del último trabajo de
-    scraping asociado (útil para el frontend mientras espera el webhook).
+    Returns whether the vehicle is resolved and the state of the latest scrape
+    job for it (useful for the frontend while it waits for the webhook).
     """
 
     def get(self, request, vin):
         vin = vin.strip().upper()
-        vehiculo = Vehicle.objects.filter(vin=vin).first()
-        job = (
-            ScrapeJob.objects.filter(vin=vin).order_by("-created_at").first()
-        )
+        vehicle = Vehicle.objects.filter(vin=vin).first()
+        job = ScrapeJob.objects.filter(vin=vin).order_by("-created_at").first()
         return Response({
             "vin": vin,
-            "vehicle": VehicleSerializer(vehiculo).data if vehiculo else None,
+            "vehicle": VehicleSerializer(vehicle).data if vehicle else None,
             "job": ScrapeJobSerializer(job).data if job else None,
         })
 
 
 class VehicleListView(ListAPIView):
-    """Lista los vehículos ya resueltos. GET /api/vehicles/"""
+    """List resolved vehicles. GET /api/vehicles/"""
 
     queryset = Vehicle.objects.all()
     serializer_class = VehicleSerializer
 
 
 class VehicleDetailView(RetrieveAPIView):
-    """Detalle de un vehículo por VIN. GET /api/vehicles/<vin>/"""
+    """Vehicle detail by VIN. GET /api/vehicles/<vin>/"""
 
     queryset = Vehicle.objects.all()
     serializer_class = VehicleSerializer
@@ -131,41 +127,41 @@ class VehicleDetailView(RetrieveAPIView):
 
 
 class SourceListView(ListAPIView):
-    """Lista las fuentes de scraping configuradas. GET /api/sources/"""
+    """List configured scraper sources. GET /api/sources/"""
 
     queryset = ScraperSource.objects.all()
     serializer_class = ScraperSourceSerializer
 
 
 class WorkerControlView(APIView):
-    """Control del worker de scraping en segundo plano.
+    """Control the background scraping worker.
 
-    GET  /api/worker/         -> estado (corriendo + resumen de la cola)
-    POST /api/worker/start/   -> arranca el worker
-    POST /api/worker/stop/    -> lo detiene (termina el trabajo en curso)
+    GET  /api/worker/         -> state (running + queue summary)
+    POST /api/worker/start/   -> start the worker
+    POST /api/worker/stop/    -> stop it (finishes the in-flight job)
 
-    El worker arranca solo con la API (SCRAPER_WORKER_AUTOSTART); estos endpoints
-    permiten pararlo y volver a arrancarlo en caliente.
+    The worker autostarts with the API (SCRAPER_WORKER_AUTOSTART); these
+    endpoints let you stop and start it again at runtime.
     """
 
     def get(self, request):
         from .worker import controller
         return Response(controller.status())
 
-    def post(self, request, accion=None):
+    def post(self, request, action=None):
         from .worker import controller
 
-        if accion == "start":
-            arrancado = controller.start()
-            detalle = "Worker arrancado." if arrancado else "El worker ya estaba corriendo."
-            return Response({"ok": True, "detail": detalle, **controller.status()})
+        if action == "start":
+            started = controller.start()
+            detail = "Worker started." if started else "The worker was already running."
+            return Response({"ok": True, "detail": detail, **controller.status()})
 
-        if accion == "stop":
-            detenido = controller.stop()
-            detalle = "Worker detenido." if detenido else "El worker no estaba corriendo."
-            return Response({"ok": True, "detail": detalle, **controller.status()})
+        if action == "stop":
+            stopped = controller.stop()
+            detail = "Worker stopped." if stopped else "The worker was not running."
+            return Response({"ok": True, "detail": detail, **controller.status()})
 
         return Response(
-            {"detail": "Acción no válida. Usa /api/worker/start/ o /api/worker/stop/."},
+            {"detail": "Invalid action. Use /api/worker/start/ or /api/worker/stop/."},
             status=status.HTTP_400_BAD_REQUEST,
         )

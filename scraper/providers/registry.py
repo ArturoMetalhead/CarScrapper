@@ -1,7 +1,7 @@
-"""Registro de providers por clave.
+"""Provider registry by key.
 
-Permite que las fuentes (`ScraperSource.provider_key`) apunten a una clase de
-provider concreta. Si la clave no está registrada, se usa el `GenericProvider`.
+Lets sources (`ScraperSource.provider_key`) point to a concrete provider class.
+If the key is not registered, `GenericProvider` is used.
 """
 from __future__ import annotations
 
@@ -13,21 +13,17 @@ _PROVIDERS: dict[str, Type[BaseProvider]] = {}
 
 
 def register(key: str):
-    """Decorador para registrar una clase de provider bajo una clave."""
+    """Decorator to register a provider class under a key."""
 
-    def decorador(cls: Type[BaseProvider]) -> Type[BaseProvider]:
+    def decorator(cls: Type[BaseProvider]) -> Type[BaseProvider]:
         _PROVIDERS[key] = cls
         return cls
 
-    return decorador
+    return decorator
 
 
 def get_provider_class(key: str) -> Type[BaseProvider]:
-    """Devuelve la clase de provider para la clave dada.
-
-    Si la clave no está registrada, cae al GenericProvider (import diferido
-    para evitar imports circulares).
-    """
+    """Return the provider class for the given key, or GenericProvider."""
     if key in _PROVIDERS:
         return _PROVIDERS[key]
     from .generic import GenericProvider

@@ -1,8 +1,8 @@
 """
-Configuración de Django para el proyecto CarScrapper.
+Django settings for the CarScrapper project.
 
-Basado en Django 6.0. Las variables sensibles se leen desde un archivo .env
-(ver .env.example) usando django-environ.
+Based on Django 6.0. Sensitive values are read from a .env file (see
+.env.example) using django-environ.
 """
 from pathlib import Path
 
@@ -10,21 +10,21 @@ import environ
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# --- Variables de entorno -------------------------------------------------
+# --- Environment variables ------------------------------------------------
 env = environ.Env(
     DEBUG=(bool, False),
     ALLOWED_HOSTS=(list, ["127.0.0.1", "localhost"]),
     CORS_ALLOWED_ORIGINS=(list, []),
 )
-# Lee el archivo .env si existe (en desarrollo). En producción se usan
-# variables de entorno reales del sistema.
+# Read the .env file if present (development). In production, use real system
+# environment variables.
 environ.Env.read_env(BASE_DIR / ".env")
 
 SECRET_KEY = env("SECRET_KEY", default="dev-insecure-change-me")
 DEBUG = env("DEBUG")
 ALLOWED_HOSTS = env("ALLOWED_HOSTS")
 
-# --- Aplicaciones ---------------------------------------------------------
+# --- Applications ---------------------------------------------------------
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -32,10 +32,10 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    # Terceros
+    # Third party
     "rest_framework",
     "corsheaders",
-    # Apps propias
+    # Local apps
     "scraper",
 ]
 
@@ -70,8 +70,8 @@ TEMPLATES = [
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
-# --- Base de datos --------------------------------------------------------
-# SQLite por defecto para desarrollo. Cambiar a Postgres en producción.
+# --- Database -------------------------------------------------------------
+# SQLite by default for development. Switch to Postgres in production.
 DATABASES = {
     "default": env.db(
         "DATABASE_URL",
@@ -79,7 +79,7 @@ DATABASES = {
     )
 }
 
-# --- Validación de contraseñas -------------------------------------------
+# --- Password validation --------------------------------------------------
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
@@ -87,13 +87,13 @@ AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
 
-# --- Internacionalización -------------------------------------------------
+# --- Internationalization -------------------------------------------------
 LANGUAGE_CODE = "es"
 TIME_ZONE = "UTC"
 USE_I18N = True
 USE_TZ = True
 
-# --- Archivos estáticos ---------------------------------------------------
+# --- Static files ---------------------------------------------------------
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
@@ -119,8 +119,8 @@ REST_FRAMEWORK = {
 # --- CORS -----------------------------------------------------------------
 CORS_ALLOWED_ORIGINS = env("CORS_ALLOWED_ORIGINS")
 
-# --- Configuración del scraper -------------------------------------------
-# URL base del sitio al que se le hará scraping y el User-Agent a usar.
+# --- Scraper configuration ------------------------------------------------
+# Base URL of the site to scrape and the User-Agent to use.
 SCRAPER_BASE_URL = env("SCRAPER_BASE_URL", default="")
 SCRAPER_USER_AGENT = env(
     "SCRAPER_USER_AGENT",
@@ -130,48 +130,48 @@ SCRAPER_USER_AGENT = env(
     ),
 )
 SCRAPER_TIMEOUT = env.int("SCRAPER_TIMEOUT", default=20)
-# Aplica playwright-stealth en los providers con navegador (si está instalado).
+# Apply playwright-stealth in browser-based providers (if installed).
 SCRAPER_USE_STEALTH = env.bool("SCRAPER_USE_STEALTH", default=True)
-# Proxy opcional para todo el scraping (residencial o de un servicio).
-# Formato: http://usuario:password@host:puerto  (o sin credenciales).
+# Optional proxy for all scraping (residential or a service).
+# Format: http://user:password@host:port  (or without credentials).
 SCRAPER_PROXY = env("SCRAPER_PROXY", default="")
 
-# --- nodriver (anti-DataDome) --------------------------------------------
-# El provider de Edmunds (y el genérico 'nodriver') usan un Chrome real vía
-# nodriver para atravesar DataDome, que bloquea a Playwright/Selenium.
-# Perfil persistente: acumula la cookie `datadome` y la "confianza" de IP, de
-# forma que en régimen normal pasa al primer intento. Debe ser una carpeta
-# dedicada al scraper (no tu perfil personal de Chrome). Por defecto, una
-# carpeta oculta dentro del proyecto.
+# --- nodriver (anti-DataDome) ---------------------------------------------
+# The Edmunds provider (and the generic 'nodriver' one) use a real Chrome via
+# nodriver to get past DataDome, which blocks Playwright/Selenium.
+# Persistent profile: accumulates the `datadome` cookie and IP "trust" so in
+# steady state it passes on the first try. Must be a folder dedicated to the
+# scraper (not your personal Chrome profile). Defaults to a hidden folder in the
+# project.
 SCRAPER_NODRIVER_PROFILE_DIR = env(
     "SCRAPER_NODRIVER_PROFILE_DIR",
     default=str(BASE_DIR / ".chrome_profile_scraper"),
 )
-# Headful (ventana visible) es lo verificado contra DataDome. Headless puede
-# fallar y en un servidor sin pantalla requiere xvfb. Cambia bajo tu cuenta.
+# Headful (visible window) is what was verified against DataDome. Headless may
+# fail and needs xvfb on a headless server. Change at your own risk.
 SCRAPER_NODRIVER_HEADLESS = env.bool("SCRAPER_NODRIVER_HEADLESS", default=False)
-# Reintentos con recarga: un 403 de DataDome deja una cookie fresca que hace
-# pasar el siguiente intento en la misma sesión.
+# Retries with reload: a DataDome 403 sets a fresh cookie that lets the next
+# attempt in the same session pass.
 SCRAPER_NODRIVER_RETRIES = env.int("SCRAPER_NODRIVER_RETRIES", default=3)
-# Segundos de espera tras navegar, para que el reto JS asiente.
+# Seconds to wait after navigating, so the JS challenge settles.
 SCRAPER_NODRIVER_SETTLE = env.int("SCRAPER_NODRIVER_SETTLE", default=6)
 
-# --- Búsqueda por VIN, caché y cola en segundo plano ---------------------
-# Timeout de la decodificación de VIN con NHTSA.
+# --- VIN lookup, cache and background queue -------------------------------
+# Timeout for NHTSA VIN decoding.
 SCRAPER_VIN_DECODE_TIMEOUT = env.int("SCRAPER_VIN_DECODE_TIMEOUT", default=15)
-# Horas que un dato de mercado (VehicleModel) se considera fresco antes de
-# reencolar su re-scraping.
+# Hours a market data row (VehicleModel) is considered fresh before requeueing
+# its re-scraping.
 SCRAPER_CACHE_TTL_HOURS = env.int("SCRAPER_CACHE_TTL_HOURS", default=24)
-# Worker: arranca solo junto a la API (hilo en segundo plano). Ponlo en False
-# si prefieres correrlo aparte con `manage.py run_scrape_worker`.
+# Worker: starts alongside the API (background thread). Set to False to run it
+# separately with `manage.py run_scrape_worker`.
 SCRAPER_WORKER_AUTOSTART = env.bool("SCRAPER_WORKER_AUTOSTART", default=True)
-# Worker: segundos entre sondeos cuando la cola está vacía.
+# Worker: seconds between polls when the queue is empty.
 SCRAPER_WORKER_POLL_SECONDS = env.int("SCRAPER_WORKER_POLL_SECONDS", default=5)
-# Máximo de intentos por trabajo antes de marcarlo como fallido.
+# Max attempts per job before marking it failed.
 SCRAPER_JOB_MAX_ATTEMPTS = env.int("SCRAPER_JOB_MAX_ATTEMPTS", default=3)
 
-# --- Webhook de notificación al frontend ---------------------------------
-# URL a la que se hace POST cuando un scrape en segundo plano termina. Puede
-# sobrescribirse por petición (campo webhook_url) o por trabajo.
+# --- Frontend notification webhook ----------------------------------------
+# URL POSTed to when a background scrape finishes. Can be overridden per request
+# (webhook_url field) or per job.
 SCRAPER_WEBHOOK_URL = env("SCRAPER_WEBHOOK_URL", default="")
 SCRAPER_WEBHOOK_TIMEOUT = env.int("SCRAPER_WEBHOOK_TIMEOUT", default=10)

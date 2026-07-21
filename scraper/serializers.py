@@ -1,35 +1,37 @@
-"""Serializers de la app scraper."""
+"""Scraper app serializers."""
 import re
 
 from rest_framework import serializers
 
 from .models import ScrapeJob, ScraperSource, Vehicle
 
-# El VIN son 17 caracteres alfanuméricos, sin las letras I, O y Q.
+# A VIN is 17 alphanumeric characters, excluding the letters I, O and Q.
 VIN_REGEX = re.compile(r"^[A-HJ-NPR-Z0-9]{17}$", re.IGNORECASE)
 
 
+def _validate_vin(value: str) -> str:
+    value = value.strip().upper()
+    if not VIN_REGEX.match(value):
+        raise serializers.ValidationError(
+            "Invalid VIN. It must be 17 alphanumeric characters "
+            "(excluding the letters I, O and Q)."
+        )
+    return value
+
+
 class ScraperSourceSerializer(serializers.ModelSerializer):
-    """Representación de una fuente de scraping."""
+    """Representation of a scraper source."""
 
     class Meta:
         model = ScraperSource
         fields = [
-            "id",
-            "name",
-            "slug",
-            "base_url",
-            "vin_path_template",
-            "provider_key",
-            "selectors",
-            "priority",
-            "is_active",
-            "timeout",
+            "id", "name", "slug", "base_url", "vin_path_template",
+            "provider_key", "selectors", "priority", "is_active", "timeout",
         ]
 
 
 class VehicleSerializer(serializers.ModelSerializer):
-    """Representación de un vehículo para las respuestas de la API."""
+    """Representation of a vehicle for API responses."""
 
     source_name = serializers.CharField(source="source.name", read_only=True, default=None)
     market_updated_at = serializers.DateTimeField(
@@ -39,39 +41,15 @@ class VehicleSerializer(serializers.ModelSerializer):
     class Meta:
         model = Vehicle
         fields = [
-            "id",
-            "vin",
-            "make",
-            "model",
-            "year",
-            "trim",
-            "body_class",
-            "mileage",
-            "estimated_price",
-            "currency",
-            "source",
-            "source_name",
-            "source_url",
-            "market_updated_at",
-            "raw_data",
-            "created_at",
-            "updated_at",
+            "id", "vin", "make", "model", "year", "trim", "body_class",
+            "mileage", "estimated_price", "currency", "source", "source_name",
+            "source_url", "market_updated_at", "raw_data", "created_at", "updated_at",
         ]
         read_only_fields = fields
 
 
-def _validar_vin(value: str) -> str:
-    value = value.strip().upper()
-    if not VIN_REGEX.match(value):
-        raise serializers.ValidationError(
-            "VIN inválido. Debe tener 17 caracteres alfanuméricos "
-            "(sin las letras I, O ni Q)."
-        )
-    return value
-
-
 class ScrapeJobSerializer(serializers.ModelSerializer):
-    """Estado de un trabajo de scraping en segundo plano."""
+    """State of a background scrape job."""
 
     class Meta:
         model = ScrapeJob
@@ -84,21 +62,21 @@ class ScrapeJobSerializer(serializers.ModelSerializer):
 
 
 class VinLookupSerializer(serializers.Serializer):
-    """Valida el VIN que entra en la petición de búsqueda.
+    """Validates the VIN of a lookup request.
 
-    `webhook_url` es opcional: si se envía, el aviso de "dato listo" se hará a esa
-    URL en vez de a la global (SCRAPER_WEBHOOK_URL).
+    `webhook_url` is optional: if provided, the "data ready" notification goes to
+    that URL instead of the global one (SCRAPER_WEBHOOK_URL).
     """
 
     vin = serializers.CharField(max_length=17, min_length=17)
     webhook_url = serializers.URLField(required=False, allow_blank=True, default="")
 
     def validate_vin(self, value: str) -> str:
-        return _validar_vin(value)
+        return _validate_vin(value)
 
 
 class VinBatchSerializer(serializers.Serializer):
-    """Valida una lista de VINs para precargar (pre-scraping proactivo)."""
+    """Validates a list of VINs to prewarm (proactive scraping)."""
 
     vins = serializers.ListField(
         child=serializers.CharField(max_length=17, min_length=17),
@@ -108,4 +86,4 @@ class VinBatchSerializer(serializers.Serializer):
     webhook_url = serializers.URLField(required=False, allow_blank=True, default="")
 
     def validate_vins(self, value: list[str]) -> list[str]:
-        return [_validar_vin(v) for v in value]
+        return [_validate_vin(v) for v in value]

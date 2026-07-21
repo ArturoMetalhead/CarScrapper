@@ -1,15 +1,14 @@
-"""Decodificación de VIN vía la API vPIC de NHTSA.
+"""VIN decoding via NHTSA's vPIC API.
 
-NHTSA (National Highway Traffic Safety Administration) expone una API pública,
-gratuita y sin API key que decodifica un VIN a marca, modelo, año, versión,
-carrocería, motor, etc. Es el estándar de la industria en EE.UU. y no aplica
-bloqueos anti-bot.
+NHTSA (National Highway Traffic Safety Administration) exposes a public, free,
+no-API-key API that decodes a VIN into make, model, year, trim, body class,
+engine, etc. It is the US industry standard and applies no anti-bot blocking.
 
-Doc: https://vpic.nhtsa.dot.gov/api/
+Docs: https://vpic.nhtsa.dot.gov/api/
 
-El resultado se normaliza a un dataclass `DecodedVin` con los campos que usa el
-resto del sistema (marca/modelo/año/trim son la clave para buscar los datos de
-mercado scrapeados por modelo).
+The result is normalized into a `DecodedVin` dataclass with the fields the rest
+of the system uses (make/model/year/trim are the key to look up the market data
+scraped per model).
 """
 from __future__ import annotations
 
@@ -23,12 +22,12 @@ VPIC_URL = "https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValues/{vin}?format
 
 
 class VinDecodeError(Exception):
-    """No se pudo decodificar el VIN (red, timeout, o VIN inválido para NHTSA)."""
+    """Could not decode the VIN (network, timeout, or invalid VIN for NHTSA)."""
 
 
 @dataclass
 class DecodedVin:
-    """Datos decodificados de un VIN, normalizados."""
+    """Normalized decoded VIN data."""
 
     vin: str
     make: str = ""
@@ -40,20 +39,20 @@ class DecodedVin:
 
     @property
     def is_usable(self) -> bool:
-        """True si tenemos lo mínimo para buscar por modelo (marca y modelo)."""
+        """True if we have the minimum to look up by model (make and model)."""
         return bool(self.make and self.model)
 
 
-def _to_int(valor: Any) -> int | None:
-    texto = str(valor or "").strip()
-    return int(texto) if texto.isdigit() else None
+def _to_int(value: Any) -> int | None:
+    text = str(value or "").strip()
+    return int(text) if text.isdigit() else None
 
 
 def decode_vin(vin: str) -> DecodedVin:
-    """Decodifica un VIN con NHTSA y devuelve un `DecodedVin`.
+    """Decode a VIN with NHTSA and return a `DecodedVin`.
 
     Raises:
-        VinDecodeError: si falla la red/HTTP o NHTSA reporta un VIN no válido.
+        VinDecodeError: on network/HTTP failure or if NHTSA reports an invalid VIN.
     """
     url = VPIC_URL.format(vin=vin)
     timeout = getattr(settings, "SCRAPER_VIN_DECODE_TIMEOUT", 15)
@@ -62,15 +61,15 @@ def decode_vin(vin: str) -> DecodedVin:
         resp.raise_for_status()
         data = resp.json()
     except (requests.RequestException, ValueError) as exc:
-        raise VinDecodeError(f"Error decodificando VIN {vin} con NHTSA: {exc}") from exc
+        raise VinDecodeError(f"Error decoding VIN {vin} with NHTSA: {exc}") from exc
 
-    resultados = data.get("Results") or []
-    if not resultados:
-        raise VinDecodeError(f"NHTSA no devolvió resultados para el VIN {vin}.")
-    res = resultados[0]
+    results = data.get("Results") or []
+    if not results:
+        raise VinDecodeError(f"NHTSA returned no results for VIN {vin}.")
+    res = results[0]
 
-    # ErrorCode "0" = decodificación limpia. Otros códigos pueden traer datos
-    # parciales; los aceptamos si al menos hay marca y modelo.
+    # ErrorCode "0" means a clean decode; other codes may still carry partial
+    # data, which we accept as long as make and model are present.
     decoded = DecodedVin(
         vin=vin,
         make=(res.get("Make") or "").strip(),
@@ -81,8 +80,6 @@ def decode_vin(vin: str) -> DecodedVin:
         raw=res,
     )
     if not decoded.is_usable:
-        error_text = res.get("ErrorText") or "sin marca/modelo"
-        raise VinDecodeError(
-            f"NHTSA no pudo decodificar marca/modelo del VIN {vin}: {error_text}"
-        )
+        error_text = res.get("ErrorText") or "no make/model"
+        raise VinDecodeError(f"NHTSA could not decode make/model for VIN {vin}: {error_text}")
     return decoded

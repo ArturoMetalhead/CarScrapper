@@ -1,16 +1,16 @@
-"""Worker de scraping en PRIMER PLANO (uso manual / debug).
+"""FOREGROUND scraping worker (manual / debug use).
 
-Normalmente el worker arranca solo junto a la API (ver SCRAPER_WORKER_AUTOSTART
-y `scraper.worker.controller`). Este comando lo corre en primer plano, útil para
-depurar o si desactivaste el arranque automático.
+Normally the worker starts alongside the API (see SCRAPER_WORKER_AUTOSTART and
+`scraper.worker.controller`). This command runs it in the foreground, useful for
+debugging or if you disabled the autostart.
 
-IMPORTANTE: no lo ejecutes a la vez que el worker automático de la API: ambos
-compartirían el perfil de Chrome y chocarían. Usa uno u otro.
+IMPORTANT: do not run it at the same time as the API's automatic worker: both
+would share the Chrome profile and clash. Use one or the other.
 
-Uso:
-    python manage.py run_scrape_worker            # bucle continuo (Ctrl+C para parar)
-    python manage.py run_scrape_worker --once      # procesa la cola y termina
-    python manage.py run_scrape_worker --poll 10   # intervalo de sondeo (s)
+Usage:
+    python manage.py run_scrape_worker            # continuous loop (Ctrl+C to stop)
+    python manage.py run_scrape_worker --once      # process the queue and exit
+    python manage.py run_scrape_worker --poll 10   # poll interval (s)
 """
 from __future__ import annotations
 
@@ -23,37 +23,37 @@ from scraper.worker import run_loop
 
 
 class Command(BaseCommand):
-    help = "Procesa la cola de scraping en primer plano (por modelo) y notifica por webhook."
+    help = "Process the scraping queue in the foreground (per model) and notify via webhook."
 
     def add_arguments(self, parser):
         parser.add_argument(
             "--once", action="store_true",
-            help="Procesa los trabajos pendientes y termina (no hace bucle).",
+            help="Process pending jobs and exit (no loop).",
         )
         parser.add_argument(
             "--poll", type=int, default=None,
-            help="Segundos entre sondeos cuando la cola está vacía (def. SCRAPER_WORKER_POLL_SECONDS).",
+            help="Seconds between polls when the queue is empty (def. SCRAPER_WORKER_POLL_SECONDS).",
         )
 
-    def handle(self, *args, **opciones):
+    def handle(self, *args, **options):
         stop_event = threading.Event()
 
-        def pedir_parada(*_a):
-            self.stdout.write("\nParada solicitada; terminando el trabajo actual...")
+        def request_stop(*_a):
+            self.stdout.write("\nStop requested; finishing the current job...")
             stop_event.set()
 
-        signal.signal(signal.SIGINT, pedir_parada)
+        signal.signal(signal.SIGINT, request_stop)
         try:
-            signal.signal(signal.SIGTERM, pedir_parada)
+            signal.signal(signal.SIGTERM, request_stop)
         except (AttributeError, ValueError):
-            pass  # SIGTERM no siempre está disponible en Windows
+            pass  # SIGTERM is not always available on Windows
 
-        modo = "once" if opciones["once"] else "continuo"
-        self.stdout.write(self.style.SUCCESS(f"Worker en primer plano iniciado (modo={modo})."))
+        mode = "once" if options["once"] else "continuous"
+        self.stdout.write(self.style.SUCCESS(f"Foreground worker started (mode={mode})."))
         run_loop(
             stop_event,
-            poll=opciones["poll"],
-            once=opciones["once"],
+            poll=options["poll"],
+            once=options["once"],
             log=lambda m: self.stdout.write(m),
         )
-        self.stdout.write("Worker detenido.")
+        self.stdout.write("Worker stopped.")

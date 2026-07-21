@@ -1,4 +1,4 @@
-"""Clase base y estructuras compartidas de los providers."""
+"""Base class and shared structures for providers."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -10,28 +10,26 @@ from django.conf import settings
 
 
 class ScraperError(Exception):
-    """Error durante el scraping (red, HTTP, parseo, config, etc.)."""
+    """Error during scraping (network, HTTP, parsing, config, etc.)."""
 
 
 class VehicleNotFound(ScraperError):
-    """La fuente respondió pero no tiene datos para ese VIN."""
+    """The source responded but has no data for that VIN."""
 
 
 class AllSourcesFailed(ScraperError):
-    """Ninguna de las fuentes configuradas pudo resolver el VIN."""
+    """None of the configured sources could resolve the VIN."""
 
-    def __init__(self, vin: str, errores: dict[str, str]):
+    def __init__(self, vin: str, errors: dict[str, str]):
         self.vin = vin
-        self.errores = errores
-        detalle = "; ".join(f"{fuente}: {msg}" for fuente, msg in errores.items())
-        super().__init__(
-            f"Ninguna fuente pudo resolver el VIN {vin}. Detalle -> {detalle}"
-        )
+        self.errors = errors
+        detail = "; ".join(f"{source}: {msg}" for source, msg in errors.items())
+        super().__init__(f"No source could resolve VIN {vin}. Detail -> {detail}")
 
 
 @dataclass
 class ScrapedVehicle:
-    """Resultado del scraping, listo para persistir en el modelo Vehicle."""
+    """Scraping result, ready to persist into the Vehicle model."""
 
     vin: str
     make: str = ""
@@ -45,7 +43,7 @@ class ScrapedVehicle:
     raw_data: dict[str, Any] = field(default_factory=dict)
 
     def as_model_kwargs(self) -> dict[str, Any]:
-        """Convierte el dataclass en kwargs para crear/actualizar el modelo."""
+        """Turn the dataclass into kwargs to create/update the model."""
         return {
             "make": self.make,
             "model": self.model,
@@ -60,61 +58,61 @@ class ScrapedVehicle:
 
 
 def parse_price(text: str) -> Decimal | None:
-    """Extrae un valor decimal de un texto tipo '$18,500' o '18.500,00'."""
+    """Extract a decimal value from text like '$18,500' or '18.500,00'."""
     if not text:
         return None
-    limpio = "".join(ch for ch in text if ch.isdigit() or ch in ".,")
-    if not limpio:
+    clean = "".join(ch for ch in text if ch.isdigit() or ch in ".,")
+    if not clean:
         return None
-    # Normaliza: quita separadores de miles y deja el punto decimal.
-    if "," in limpio and "." in limpio:
-        # El último separador que aparece es el decimal.
-        if limpio.rfind(",") > limpio.rfind("."):
-            limpio = limpio.replace(".", "").replace(",", ".")
+    # Normalize: drop thousands separators, keep the decimal point.
+    if "," in clean and "." in clean:
+        # The last separator that appears is the decimal one.
+        if clean.rfind(",") > clean.rfind("."):
+            clean = clean.replace(".", "").replace(",", ".")
         else:
-            limpio = limpio.replace(",", "")
-    elif "," in limpio:
-        limpio = limpio.replace(",", ".") if limpio.count(",") == 1 else limpio.replace(",", "")
+            clean = clean.replace(",", "")
+    elif "," in clean:
+        clean = clean.replace(",", ".") if clean.count(",") == 1 else clean.replace(",", "")
     try:
-        return Decimal(limpio)
+        return Decimal(clean)
     except InvalidOperation:
         return None
 
 
 class BaseProvider:
-    """Contrato base de un provider de scraping.
+    """Base contract for a scraping provider.
 
-    Las subclases implementan `fetch` y `parse`. El método `scrape` es el
-    template que orquesta ambos.
+    Subclasses implement `fetch`/`parse` (and optionally `fetch_model`/
+    `parse_model`). `scrape` and `scrape_model` are the templates orchestrating
+    them.
     """
 
     def __init__(self, source):
-        # `source` es una instancia de scraper.models.ScraperSource.
+        # `source` is a scraper.models.ScraperSource instance.
         self.source = source
 
-    # --- API pública -----------------------------------------------------
     def scrape(self, vin: str) -> ScrapedVehicle:
         response = self.fetch(vin)
-        resultado = self.parse(response, vin)
-        if not resultado.source_url:
-            resultado.source_url = self.source.build_url(vin)
-        return resultado
+        result = self.parse(response, vin)
+        if not result.source_url:
+            result.source_url = self.source.build_url(vin)
+        return result
 
     def scrape_model(
         self, make: str, model: str, year: int | None = None, trim: str = ""
     ) -> ScrapedVehicle:
-        """Scrapea los datos de mercado de un MODELO (para el worker de fondo).
+        """Scrape market data for a MODEL (used by the background worker).
 
-        Devuelve un `ScrapedVehicle` con vin vacío: solo interesan
-        make/model/year/trim y `estimated_price`.
+        Returns a `ScrapedVehicle` with an empty vin: only make/model/year/trim
+        and `estimated_price` matter.
         """
         response = self.fetch_model(make, model, year, trim)
-        resultado = self.parse_model(response, make, model, year, trim)
-        if not resultado.source_url:
-            resultado.source_url = self.source.build_model_url(make, model, year, trim)
-        return resultado
+        result = self.parse_model(response, make, model, year, trim)
+        if not result.source_url:
+            result.source_url = self.source.build_model_url(make, model, year, trim)
+        return result
 
-    # --- A implementar por subclases -------------------------------------
+    # --- To be implemented by subclasses ---------------------------------
     def fetch(self, vin: str) -> requests.Response:
         raise NotImplementedError
 
@@ -131,7 +129,7 @@ class BaseProvider:
     ) -> ScrapedVehicle:
         raise NotImplementedError
 
-    # --- Utilidades compartidas ------------------------------------------
+    # --- Shared utilities ------------------------------------------------
     def build_session(self) -> requests.Session:
         session = requests.Session()
         session.headers.update({"User-Agent": settings.SCRAPER_USER_AGENT})
@@ -146,5 +144,5 @@ class BaseProvider:
 
     @property
     def proxy_url(self) -> str:
-        """URL de proxy a usar (vacía si no hay). Ver SCRAPER_PROXY."""
+        """Proxy URL to use (empty if none). See SCRAPER_PROXY."""
         return getattr(settings, "SCRAPER_PROXY", "") or ""

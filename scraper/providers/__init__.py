@@ -1,26 +1,26 @@
-"""Paquete de providers de scraping.
+"""Scraping providers package.
 
-Un *provider* sabe cómo obtener y parsear la info de un vehículo desde una
-fuente concreta. La mayoría de fuentes usan el `GenericProvider`, que se
-configura por selectores CSS desde la base de datos (modelo `ScraperSource`).
+A *provider* knows how to fetch and parse a vehicle's info from a specific
+source. Most sources use `GenericProvider`, configured via CSS selectors from
+the database (`ScraperSource` model).
 
-Para un sitio que necesite lógica especial (por ejemplo, parsear JSON embebido
-o llamar a una API interna), crea una subclase de `BaseProvider` y regístrala
-con `@register("mi_clave")`. Luego pon ese `provider_key` en la fuente.
+For a site needing special logic (e.g. parsing embedded JSON or calling an
+internal API), subclass `BaseProvider` and register it with
+`@register("my_key")`. Then set that `provider_key` on the source.
 """
 from .base import BaseProvider, ScrapedVehicle
-from .generic import GenericProvider, PlaywrightGenericProvider
+from .generic import GenericProvider, NodriverGenericProvider, PlaywrightGenericProvider
 from .registry import get_provider_class, register
 
-# Importar aquí los providers personalizados hace que se registren al cargar
-# el paquete. `edmunds` es el provider del sitio principal.
-from . import edmunds  # noqa: F401  (efecto secundario: registra el provider)
+# Importing custom providers here registers them on package load.
+from . import edmunds  # noqa: F401  (side effect: registers the provider)
 
 __all__ = [
     "BaseProvider",
     "ScrapedVehicle",
     "GenericProvider",
     "PlaywrightGenericProvider",
+    "NodriverGenericProvider",
     "get_provider_class",
     "register",
 ]

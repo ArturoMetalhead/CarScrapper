@@ -1,17 +1,12 @@
-"""Provider para Edmunds (https://www.edmunds.com/).
+"""Edmunds provider (https://www.edmunds.com/).
 
-Edmunds es un sitio con mucho JavaScript: la info del vehículo no suele estar
-en el HTML plano, sino en bloques JSON embebidos (JSON-LD `application/ld+json`
-o un estado precargado). Este provider intenta:
+Edmunds is JavaScript-heavy and protected by DataDome, so this provider renders
+with a real Chrome via `NodriverFetchMixin`. Two entry points:
 
-  1. Extraer datos estructurados de los bloques <script type="application/ld+json">.
-  2. Si no encuentra, cae a los selectores CSS configurados en la fuente
-     (comportamiento del GenericProvider).
-
-NOTA: los caminos JSON y selectores concretos dependen de la estructura real
-de Edmunds en el momento de usarlo; puede que haya que ajustarlos. La
-arquitectura de fallback hace que, si Edmunds cambia y este provider deja de
-extraer datos, el sistema pase a la siguiente fuente configurada.
+  * `parse` (by VIN): extract structured data from embedded JSON-LD blocks,
+    falling back to the GenericProvider CSS selectors.
+  * `parse_model` (by model): the model page exposes no single price nor JSON-LD
+    price, so it aggregates the listing prices (median) as the market estimate.
 """
 from __future__ import annotations
 
@@ -27,66 +22,59 @@ from .generic import GenericProvider
 from .nodriver_fetch import NodriverFetchMixin
 from .registry import register
 
-# Rango plausible de precio de coche (USD) para filtrar ruido al agregar.
-_PRECIO_MIN = 1000
-_PRECIO_MAX = 200000
-_RE_PRECIO = re.compile(r"\$\s?(\d{1,3}(?:,\d{3})+)")
+# Plausible car price range (USD) to filter out noise when aggregating.
+_PRICE_MIN = 1000
+_PRICE_MAX = 200000
+_PRICE_RE = re.compile(r"\$\s?(\d{1,3}(?:,\d{3})+)")
 
 
 @register("edmunds")
 class EdmundsProvider(NodriverFetchMixin, GenericProvider):
-    """Scraper específico para Edmunds.
+    """Edmunds-specific scraper.
 
-    Edmunds está protegido por DataDome, que bloquea con 403 a los navegadores
-    automatizados por Playwright/Selenium (se verificó en este proyecto). Por
-    eso usa `NodriverFetchMixin`: un Chrome real vía nodriver, con perfil
-    persistente y reintento, que atraviesa el bloqueo. Tras renderizar, extrae
-    los datos del JSON-LD embebido; si no los encuentra, cae al parseo por
-    selectores CSS del GenericProvider.
+    Uses `NodriverFetchMixin` (real Chrome via nodriver, persistent profile and
+    retry) to get past DataDome, which 403s Playwright/Selenium-driven browsers.
     """
 
     def parse(self, response, vin: str) -> ScrapedVehicle:
         soup = BeautifulSoup(response.text, "lxml")
-
-        datos = self._extraer_json_ld(soup)
-        if datos:
-            resultado = self._desde_json_ld(datos, vin, response)
-            if resultado.estimated_price or resultado.make:
-                return resultado
-
-        # Respaldo: usa el parseo genérico por selectores CSS de la fuente.
+        data = self._extract_json_ld(soup)
+        if data:
+            result = self._from_json_ld(data, vin, response)
+            if result.estimated_price or result.make:
+                return result
+        # Fallback: generic CSS-selector parsing.
         return super().parse(response, vin)
 
     def parse_model(
         self, response, make: str, model: str, year=None, trim: str = ""
     ) -> ScrapedVehicle:
-        """Estima el precio de mercado del modelo/año agregando los listados.
+        """Estimate the model/year market price by aggregating the listings.
 
-        La página de modelo de Edmunds no expone un precio único ni JSON-LD con
-        precio; muestra muchos listados (`.heading-3` por defecto, configurable
-        vía selectors['model_price_nodes']). Tomamos la MEDIANA de esos precios,
-        robusta frente a outliers (p. ej. un modelo de otro año colado en la
-        página).
+        The Edmunds model page shows many listings (`.heading-3` by default,
+        configurable via selectors['model_price_nodes']). We take the MEDIAN of
+        those prices, robust against outliers (e.g. another year's model leaking
+        into the page).
         """
         soup = BeautifulSoup(response.text, "lxml")
-        selectores = self.source.selectors or {}
+        selectors = self.source.selectors or {}
 
-        # 1) Precios desde nodos de listado (más fiable que el texto completo).
-        selector = selectores.get("model_price_nodes", ".heading-3")
-        precios: list[Decimal] = []
-        for nodo in soup.select(selector):
-            precio = self._precio_valido(nodo.get_text(" ", strip=True))
-            if precio is not None:
-                precios.append(precio)
+        # 1) Prices from listing nodes (more reliable than the full text).
+        selector = selectors.get("model_price_nodes", ".heading-3")
+        prices: list[Decimal] = []
+        for node in soup.select(selector):
+            price = self._valid_price(node.get_text(" ", strip=True))
+            if price is not None:
+                prices.append(price)
 
-        # 2) Respaldo: regex sobre todo el texto si los nodos no dieron nada.
-        if not precios:
-            for m in _RE_PRECIO.finditer(soup.get_text(" ", strip=True)):
-                precio = self._precio_valido(m.group(0))
-                if precio is not None:
-                    precios.append(precio)
+        # 2) Fallback: regex over the whole text if the nodes yielded nothing.
+        if not prices:
+            for m in _PRICE_RE.finditer(soup.get_text(" ", strip=True)):
+                price = self._valid_price(m.group(0))
+                if price is not None:
+                    prices.append(price)
 
-        estimado = Decimal(round(median(precios))) if precios else None
+        estimated = Decimal(round(median(prices))) if prices else None
 
         return ScrapedVehicle(
             vin="",
@@ -94,90 +82,90 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
             model=model,
             year=year,
             trim=trim or "",
-            estimated_price=estimado,
+            estimated_price=estimated,
             currency="USD",
             source_url=response.url,
             raw_data={
-                "metodo": "mediana_listados",
-                "muestras": len(precios),
-                "min": float(min(precios)) if precios else None,
-                "max": float(max(precios)) if precios else None,
-                "mediana": float(estimado) if estimado is not None else None,
+                "method": "listing_median",
+                "samples": len(prices),
+                "min": float(min(prices)) if prices else None,
+                "max": float(max(prices)) if prices else None,
+                "median": float(estimated) if estimated is not None else None,
             },
         )
 
     @staticmethod
-    def _precio_valido(texto: str) -> Decimal | None:
-        """Extrae el primer precio del texto y lo valida contra el rango plausible.
+    def _valid_price(text: str) -> Decimal | None:
+        """Extract the first price from text and validate against the range.
 
-        Los precios de Edmunds usan la coma como separador de MILLARES (formato
-        US: "$15,779"). Por eso quitamos las comas y parseamos como entero, en
-        vez de usar parse_price (que ante una sola coma asumiría decimal).
+        Edmunds prices use the comma as a THOUSANDS separator (US format:
+        "$15,779"). So strip commas and parse as an integer, rather than using
+        parse_price (which would treat a single comma as a decimal).
         """
-        m = _RE_PRECIO.search(texto)
+        m = _PRICE_RE.search(text)
         if not m:
             return None
         try:
-            valor = Decimal(m.group(1).replace(",", ""))
+            value = Decimal(m.group(1).replace(",", ""))
         except (InvalidOperation, ValueError):
             return None
-        if not (_PRECIO_MIN <= valor <= _PRECIO_MAX):
+        if not (_PRICE_MIN <= value <= _PRICE_MAX):
             return None
-        return valor
+        return value
 
     # --- Helpers ----------------------------------------------------------
-    def _extraer_json_ld(self, soup: BeautifulSoup) -> dict | None:
-        """Busca un bloque JSON-LD que describa un Vehicle/Car/Product."""
+    def _extract_json_ld(self, soup: BeautifulSoup) -> dict | None:
+        """Find a JSON-LD block describing a Vehicle/Car/Product."""
         for tag in soup.find_all("script", type="application/ld+json"):
-            contenido = tag.string or tag.get_text()
-            if not contenido:
+            content = tag.string or tag.get_text()
+            if not content:
                 continue
             try:
-                data = json.loads(contenido)
+                data = json.loads(content)
             except (json.JSONDecodeError, ValueError):
                 continue
             for item in data if isinstance(data, list) else [data]:
                 if not isinstance(item, dict):
                     continue
-                tipo = item.get("@type", "")
-                tipos = tipo if isinstance(tipo, list) else [tipo]
-                if any(t in ("Vehicle", "Car", "Product") for t in tipos):
+                type_ = item.get("@type", "")
+                types = type_ if isinstance(type_, list) else [type_]
+                if any(t in ("Vehicle", "Car", "Product") for t in types):
                     return item
         return None
 
-    def _desde_json_ld(self, data: dict, vin: str, response) -> ScrapedVehicle:
-        oferta = data.get("offers") or {}
-        if isinstance(oferta, list):
-            oferta = oferta[0] if oferta else {}
+    def _from_json_ld(self, data: dict, vin: str, response) -> ScrapedVehicle:
+        offer = data.get("offers") or {}
+        if isinstance(offer, list):
+            offer = offer[0] if offer else {}
 
-        precio = oferta.get("price") or data.get("price")
-        moneda = oferta.get("priceCurrency") or "USD"
-        anio = data.get("modelDate") or data.get("productionDate") or data.get("vehicleModelDate")
+        price = offer.get("price") or data.get("price")
+        currency = offer.get("priceCurrency") or "USD"
+        year = data.get("modelDate") or data.get("productionDate") or data.get("vehicleModelDate")
 
         return ScrapedVehicle(
             vin=vin,
-            make=self._nombre(data.get("brand")) or data.get("manufacturer", ""),
+            make=self._name(data.get("brand")) or data.get("manufacturer", ""),
             model=data.get("model", "") if isinstance(data.get("model"), str) else "",
-            year=int(str(anio)[:4]) if anio and str(anio)[:4].isdigit() else None,
+            year=int(str(year)[:4]) if year and str(year)[:4].isdigit() else None,
             trim=data.get("vehicleConfiguration", ""),
-            mileage=self._millas(data.get("mileageFromOdometer")),
-            estimated_price=parse_price(str(precio)) if precio is not None else None,
-            currency=moneda,
+            mileage=self._miles(data.get("mileageFromOdometer")),
+            estimated_price=parse_price(str(price)) if price is not None else None,
+            currency=currency,
             source_url=response.url,
             raw_data={"json_ld": data},
         )
 
     @staticmethod
-    def _nombre(valor) -> str:
-        if isinstance(valor, dict):
-            return valor.get("name", "")
-        return valor or "" if isinstance(valor, str) else ""
+    def _name(value) -> str:
+        if isinstance(value, dict):
+            return value.get("name", "")
+        return value or "" if isinstance(value, str) else ""
 
     @staticmethod
-    def _millas(valor) -> int | None:
-        if isinstance(valor, dict):
-            valor = valor.get("value")
-        if valor is None:
+    def _miles(value) -> int | None:
+        if isinstance(value, dict):
+            value = value.get("value")
+        if value is None:
             return None
-        digitos = "".join(c for c in str(valor) if c.isdigit())
-        return int(digitos) if digitos else None
+        digits = "".join(c for c in str(value) if c.isdigit())
+        return int(digits) if digits else None

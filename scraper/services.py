@@ -1,17 +1,17 @@
-"""Capa de servicio: resolución rápida por VIN + scraping por modelo en fondo.
+"""Service layer: fast VIN resolution + background model scraping.
 
-Flujo de una búsqueda por VIN (`resolve_vin`):
-  1. Si el VIN ya está resuelto y su dato de modelo está FRESCO -> se devuelve al
-     instante (caché).
-  2. Si no, se decodifica el VIN con NHTSA (marca/modelo/año/trim).
-  3. Se busca el dato de mercado por MODELO en caché (`VehicleModel`).
-     - Fresco -> se enlaza y se devuelve al instante.
-     - Ausente o caducado -> se ENCOLA un trabajo de scraping y se responde
-       "processing"; un worker lo procesará en segundo plano y avisará por
-       webhook. Si había un dato caducado, se devuelve mientras tanto.
+VIN lookup flow (`resolve_vin`):
+  1. If the VIN is already resolved and its model data is FRESH -> return it
+     instantly (cache).
+  2. Otherwise decode the VIN with NHTSA (make/model/year/trim).
+  3. Look up the market data by MODEL in the cache (`VehicleModel`).
+     - Fresh -> link it and return instantly.
+     - Missing or stale -> ENQUEUE a scrape job and return "processing"; a worker
+       processes it in the background and notifies via webhook. If stale data
+       exists, it is returned in the meantime.
 
-El scraping real por modelo (`scrape_model_data`) lo ejecuta el worker, probando
-las fuentes activas por prioridad con fallback.
+The actual per-model scraping (`scrape_model_data`) is run by the worker, trying
+the active sources by priority with fallback.
 """
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ __all__ = [
     "ScrapedVehicle",
 ]
 
-# Estados de resolución que devuelve resolve_vin.
+# Resolution states returned by resolve_vin.
 STATUS_READY = "ready"
 STATUS_PROCESSING = "processing"
 
@@ -57,25 +57,23 @@ def _ttl() -> timedelta:
 
 
 def is_fresh(vehicle_model: VehicleModel | None) -> bool:
-    """True si el dato de modelo existe y no ha superado el TTL de caché."""
+    """True if the model data exists and has not exceeded the cache TTL."""
     if not vehicle_model:
         return False
     return timezone.now() - vehicle_model.updated_at <= _ttl()
 
 
 def _find_model(make: str, model: str, year: int | None) -> VehicleModel | None:
-    """Busca el dato de mercado por modelo (granularidad marca/modelo/año)."""
+    """Find market data by model (make/model/year granularity)."""
     return (
-        VehicleModel.objects.filter(
-            make__iexact=make, model__iexact=model, year=year
-        )
+        VehicleModel.objects.filter(make__iexact=make, model__iexact=model, year=year)
         .order_by("-updated_at")
         .first()
     )
 
 
 def _link_model(vehicle: Vehicle, vm: VehicleModel) -> None:
-    """Copia el precio de mercado del modelo al VIN y guarda."""
+    """Copy the model's market price onto the VIN and save."""
     vehicle.vehicle_model = vm
     vehicle.estimated_price = vm.estimated_price
     vehicle.currency = vm.currency or "USD"
@@ -87,28 +85,26 @@ def _link_model(vehicle: Vehicle, vm: VehicleModel) -> None:
 
 
 def resolve_vin(vin: str, webhook_url: str = "") -> tuple[Vehicle, str]:
-    """Resuelve un VIN: caché instantáneo o encola scraping en segundo plano.
+    """Resolve a VIN: instant cache hit or enqueue background scraping.
 
     Returns:
-        (vehicle, status) donde status es "ready" (dato fresco disponible) o
-        "processing" (se encoló; el precio llegará por webhook / al consultar).
+        (vehicle, status) where status is "ready" (fresh data available) or
+        "processing" (enqueued; the price will arrive via webhook / on lookup).
 
     Raises:
-        VinDecodeError: si NHTSA no puede decodificar el VIN.
+        VinDecodeError: if NHTSA cannot decode the VIN.
     """
-    vehicle = (
-        Vehicle.objects.select_related("vehicle_model").filter(vin=vin).first()
-    )
+    vehicle = Vehicle.objects.select_related("vehicle_model").filter(vin=vin).first()
 
-    # 1) Caché por VIN con dato de modelo fresco.
+    # 1) Per-VIN cache with fresh model data.
     if vehicle and is_fresh(vehicle.vehicle_model):
         return vehicle, STATUS_READY
 
-    # 2) Aseguramos los datos decodificados (reusar si ya los teníamos).
+    # 2) Ensure decoded data (reuse it if we already had it).
     if vehicle and vehicle.make and vehicle.model:
         make, model, year, trim = vehicle.make, vehicle.model, vehicle.year, vehicle.trim
     else:
-        decoded = decode_vin(vin)  # puede lanzar VinDecodeError
+        decoded = decode_vin(vin)  # may raise VinDecodeError
         make, model, year, trim = decoded.make, decoded.model, decoded.year, decoded.trim
         vehicle, _ = Vehicle.objects.update_or_create(
             vin=vin,
@@ -122,13 +118,13 @@ def resolve_vin(vin: str, webhook_url: str = "") -> tuple[Vehicle, str]:
             },
         )
 
-    # 3) Dato de mercado por modelo.
+    # 3) Market data by model.
     vm = _find_model(make, model, year)
     if is_fresh(vm):
         _link_model(vehicle, vm)
         return vehicle, STATUS_READY
 
-    # 4) Ausente o caducado -> encolar. Si hay uno caducado, lo mostramos ya.
+    # 4) Missing or stale -> enqueue. If a stale one exists, show it meanwhile.
     enqueue_scrape(make, model, year, trim="", vin=vin, webhook_url=webhook_url)
     if vm:
         _link_model(vehicle, vm)
@@ -143,31 +139,29 @@ def enqueue_scrape(
     vin: str = "",
     webhook_url: str = "",
 ) -> ScrapeJob:
-    """Encola un trabajo de scraping por modelo, evitando duplicados.
+    """Enqueue a per-model scrape job, avoiding duplicates.
 
-    Si ya hay un trabajo pendiente o en proceso para el mismo modelo, se reutiliza
-    (no se crea otro). Sirve tanto para búsquedas bajo demanda como para precargar
-    una lista de VINs/modelos.
+    If a pending or running job already exists for the same model, it is reused
+    (no new one is created). Works both for on-demand lookups and for prewarming
+    a list of VINs/models.
     """
-    existente = (
-        ScrapeJob.objects.filter(
-            make__iexact=make, model__iexact=model, year=year
-        )
+    existing = (
+        ScrapeJob.objects.filter(make__iexact=make, model__iexact=model, year=year)
         .filter(Q(status=ScrapeJob.Status.PENDING) | Q(status=ScrapeJob.Status.RUNNING))
         .first()
     )
-    if existente:
-        # Si el trabajo previo no tenía webhook/vin y ahora sí, los completamos.
-        cambios = []
-        if vin and not existente.vin:
-            existente.vin = vin
-            cambios.append("vin")
-        if webhook_url and not existente.webhook_url:
-            existente.webhook_url = webhook_url
-            cambios.append("webhook_url")
-        if cambios:
-            existente.save(update_fields=cambios)
-        return existente
+    if existing:
+        # Fill in vin/webhook if the previous job lacked them and we have them now.
+        changed = []
+        if vin and not existing.vin:
+            existing.vin = vin
+            changed.append("vin")
+        if webhook_url and not existing.webhook_url:
+            existing.webhook_url = webhook_url
+            changed.append("webhook_url")
+        if changed:
+            existing.save(update_fields=changed)
+        return existing
 
     return ScrapeJob.objects.create(
         make=make, model=model, year=year, trim=trim, vin=vin, webhook_url=webhook_url
@@ -175,77 +169,76 @@ def enqueue_scrape(
 
 
 def apply_model_to_vehicles(vm: VehicleModel) -> int:
-    """Propaga el precio de un modelo recién scrapeado a todos sus VINs.
+    """Propagate a freshly scraped model's price to all its VINs.
 
-    Tras resolver un `VehicleModel`, actualiza los `Vehicle` ya conocidos de ese
-    modelo/año para que sus consultas devuelvan el dato fresco. Devuelve cuántos
-    vehículos se actualizaron.
+    Updates the known `Vehicle`s of that model/year so their lookups return the
+    fresh data. Returns how many vehicles were updated.
     """
-    vehiculos = Vehicle.objects.filter(
+    vehicles = Vehicle.objects.filter(
         make__iexact=vm.make, model__iexact=vm.model, year=vm.year
     )
-    actualizados = 0
-    for vehiculo in vehiculos:
-        _link_model(vehiculo, vm)
-        actualizados += 1
-    return actualizados
+    updated = 0
+    for vehicle in vehicles:
+        _link_model(vehicle, vm)
+        updated += 1
+    return updated
 
 
 def scrape_model_data(
     make: str, model: str, year: int | None = None, trim: str = ""
 ) -> VehicleModel:
-    """Scrapea el dato de mercado de un modelo probando las fuentes por prioridad.
+    """Scrape a model's market data trying the sources by priority.
 
-    Lo usa el worker. Guarda/actualiza el `VehicleModel` y lo devuelve.
+    Used by the worker. Saves/updates the `VehicleModel` and returns it.
 
     Raises:
-        AllSourcesFailed: si ninguna fuente con scraping por modelo lo resuelve.
+        AllSourcesFailed: if no source with model scraping can resolve it.
     """
-    fuentes = list(
+    sources = list(
         ScraperSource.objects.filter(is_active=True)
         .exclude(model_path_template="")
         .order_by("priority")
     )
-    if not fuentes:
+    if not sources:
         raise AllSourcesFailed(
-            f"{make} {model}", {"config": "No hay fuentes con scraping por modelo."}
+            f"{make} {model}", {"config": "No sources with model scraping."}
         )
 
-    errores: dict[str, str] = {}
-    for fuente in fuentes:
-        provider = get_provider_class(fuente.provider_key)(fuente)
+    errors: dict[str, str] = {}
+    for source in sources:
+        provider = get_provider_class(source.provider_key)(source)
         try:
-            resultado = provider.scrape_model(make, model, year, trim)
+            result = provider.scrape_model(make, model, year, trim)
         except VehicleNotFound as exc:
-            errores[fuente.name] = str(exc)
+            errors[source.name] = str(exc)
             continue
         except ScraperError as exc:
-            logger.warning("Fuente '%s' falló para %s %s: %s", fuente.name, make, model, exc)
-            errores[fuente.name] = str(exc)
+            logger.warning("Source '%s' failed for %s %s: %s", source.name, make, model, exc)
+            errors[source.name] = str(exc)
             continue
-        except Exception as exc:  # noqa: BLE001 — no dejar que un sitio roto tumbe el worker
-            logger.exception("Error inesperado en '%s' para %s %s", fuente.name, make, model)
-            errores[fuente.name] = f"Error inesperado: {exc}"
+        except Exception as exc:  # noqa: BLE001 — a broken site must not take down the worker
+            logger.exception("Unexpected error in '%s' for %s %s", source.name, make, model)
+            errors[source.name] = f"Unexpected error: {exc}"
             continue
 
-        if resultado.estimated_price is None:
-            errores[fuente.name] = "No se pudo extraer precio del modelo."
+        if result.estimated_price is None:
+            errors[source.name] = "Could not extract the model price."
             continue
 
         vm, _ = VehicleModel.objects.update_or_create(
             make=make,
             model=model,
             year=year,
-            trim="",  # granularidad marca/modelo/año (la URL de Edmunds no usa trim)
+            trim="",  # make/model/year granularity (the Edmunds URL ignores trim)
             defaults={
-                "estimated_price": resultado.estimated_price,
-                "currency": resultado.currency or "USD",
-                "source": fuente,
-                "source_url": resultado.source_url,
-                "raw_data": resultado.raw_data,
+                "estimated_price": result.estimated_price,
+                "currency": result.currency or "USD",
+                "source": source,
+                "source_url": result.source_url,
+                "raw_data": result.raw_data,
             },
         )
-        logger.info("Modelo %s %s %s resuelto por '%s'.", year, make, model, fuente.name)
+        logger.info("Model %s %s %s resolved by '%s'.", year, make, model, source.name)
         return vm
 
-    raise AllSourcesFailed(f"{make} {model} {year}", errores)
+    raise AllSourcesFailed(f"{make} {model} {year}", errors)

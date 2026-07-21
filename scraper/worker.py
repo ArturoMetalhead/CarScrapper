@@ -1,15 +1,15 @@
-"""Worker de scraping en segundo plano y su controlador.
+"""Background scraping worker and its controller.
 
-Contiene:
-  * La lógica de procesar la cola de `ScrapeJob` (claim atómico + scrape + caché
-    + webhook), compartida por el comando `run_scrape_worker` (primer plano) y
-    por el hilo que arranca junto a la API.
-  * `WorkerController`: gestiona ese bucle en un hilo demonio, con arranque y
-    parada en caliente. Se expone un singleton `controller` que usan el arranque
-    automático (AppConfig.ready), los endpoints de la API y el comando.
+Contains:
+  * The logic to process the `ScrapeJob` queue (atomic claim + scrape + cache +
+    webhook), shared by the `run_scrape_worker` command (foreground) and by the
+    thread that starts alongside the API.
+  * `WorkerController`: manages that loop in a daemon thread, with hot start/stop.
+    A singleton `controller` is used by the autostart (AppConfig.ready), the API
+    endpoints and the command.
 
-Nota: el worker procesa de uno en uno porque nodriver solo permite un navegador
-a la vez. Debe correr en la máquina con IP residencial + Chrome.
+The worker processes one job at a time because nodriver allows a single browser.
+It must run on the machine with the residential IP + Chrome.
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from .services import AllSourcesFailed, apply_model_to_vehicles, scrape_model_da
 
 logger = logging.getLogger(__name__)
 
-# Tipo de un logger simple (print, self.stdout.write, o logger.info).
+# A simple logger (print, self.stdout.write, or logger.info).
 LogFn = Callable[[str], None]
 
 
@@ -35,10 +35,10 @@ def _noop(_msg: str) -> None:
 
 
 def claim_next_job() -> ScrapeJob | None:
-    """Toma el siguiente trabajo pendiente y lo marca 'running' atómicamente.
+    """Take the next pending job and mark it 'running' atomically.
 
-    El update condicionado a status=PENDING evita que dos ejecutores tomen el
-    mismo trabajo.
+    The update conditioned on status=PENDING prevents two runners from taking the
+    same job.
     """
     job = (
         ScrapeJob.objects.filter(status=ScrapeJob.Status.PENDING)
@@ -47,45 +47,45 @@ def claim_next_job() -> ScrapeJob | None:
     )
     if job is None:
         return None
-    tomado = ScrapeJob.objects.filter(
+    taken = ScrapeJob.objects.filter(
         pk=job.pk, status=ScrapeJob.Status.PENDING
     ).update(status=ScrapeJob.Status.RUNNING, started_at=timezone.now())
-    if not tomado:
+    if not taken:
         return None
     job.refresh_from_db()
     return job
 
 
 def process_job(job: ScrapeJob, log: LogFn = _noop) -> None:
-    """Scrapea un trabajo, cachea el resultado, propaga a los VINs y notifica."""
-    etiqueta = " ".join(str(x) for x in (job.year, job.make, job.model) if x)
-    log(f"-> Scrapeando {etiqueta} (VIN origen: {job.vin or 'n/a'})...")
+    """Scrape a job, cache the result, propagate to the VINs and notify."""
+    label = " ".join(str(x) for x in (job.year, job.make, job.model) if x)
+    log(f"-> Scraping {label} (origin VIN: {job.vin or 'n/a'})...")
     job.attempts += 1
-    max_intentos = getattr(settings, "SCRAPER_JOB_MAX_ATTEMPTS", 3)
+    max_attempts = getattr(settings, "SCRAPER_JOB_MAX_ATTEMPTS", 3)
 
     try:
         vm = scrape_model_data(job.make, job.model, job.year, job.trim)
     except AllSourcesFailed as exc:
         job.last_error = str(exc)
-        if job.attempts >= max_intentos:
+        if job.attempts >= max_attempts:
             job.status = ScrapeJob.Status.FAILED
             job.finished_at = timezone.now()
             job.save(update_fields=["status", "attempts", "last_error", "finished_at"])
-            log(f"   FALLÓ tras {job.attempts} intentos: {exc}")
+            log(f"   FAILED after {job.attempts} attempts: {exc}")
             webhooks.notify(job, error=True)
         else:
-            job.status = ScrapeJob.Status.PENDING  # reencolar para reintento
+            job.status = ScrapeJob.Status.PENDING  # requeue for retry
             job.started_at = None
             job.save(update_fields=["status", "attempts", "last_error", "started_at"])
-            log(f"   Reintento {job.attempts}/{max_intentos}: {exc}")
+            log(f"   Retry {job.attempts}/{max_attempts}: {exc}")
         return
-    except Exception as exc:  # noqa: BLE001 — un fallo inesperado no debe tumbar el worker
+    except Exception as exc:  # noqa: BLE001 — an unexpected failure must not kill the worker
         job.status = ScrapeJob.Status.FAILED
-        job.last_error = f"Error inesperado: {exc}"
+        job.last_error = f"Unexpected error: {exc}"
         job.finished_at = timezone.now()
         job.save(update_fields=["status", "attempts", "last_error", "finished_at"])
-        logger.exception("Error inesperado procesando job %s", job.pk)
-        log(f"   ERROR inesperado: {exc}")
+        logger.exception("Unexpected error processing job %s", job.pk)
+        log(f"   Unexpected ERROR: {exc}")
         webhooks.notify(job, error=True)
         return
 
@@ -95,8 +95,8 @@ def process_job(job: ScrapeJob, log: LogFn = _noop) -> None:
     job.save(update_fields=["result", "status", "attempts", "finished_at"])
     n = apply_model_to_vehicles(vm)
     log(
-        f"   OK: {etiqueta} -> {vm.estimated_price} {vm.currency} "
-        f"({vm.raw_data.get('muestras', '?')} listados; {n} VIN(s) actualizados)."
+        f"   OK: {label} -> {vm.estimated_price} {vm.currency} "
+        f"({vm.raw_data.get('samples', '?')} listings; {n} VIN(s) updated)."
     )
     webhooks.notify(job, vm)
 
@@ -107,27 +107,27 @@ def run_loop(
     once: bool = False,
     log: LogFn = _noop,
 ) -> None:
-    """Bucle principal: procesa trabajos hasta que se pida parar (o hasta vaciar
-    la cola si `once`). Comprueba `stop_event` de forma frecuente."""
+    """Main loop: process jobs until stop is requested (or until the queue is
+    empty if `once`). Checks `stop_event` frequently."""
     poll = poll or getattr(settings, "SCRAPER_WORKER_POLL_SECONDS", 5)
     while not stop_event.is_set():
         try:
             job = claim_next_job()
-        except Exception:  # noqa: BLE001 — problemas transitorios de BD no matan el bucle
-            logger.exception("Error tomando el siguiente trabajo")
+        except Exception:  # noqa: BLE001 — transient DB issues must not kill the loop
+            logger.exception("Error claiming the next job")
             job = None
 
         if job is None:
             if once:
                 break
-            # Espera interrumpible: si llega stop_event, sale enseguida.
+            # Interruptible wait: exits promptly if stop_event is set.
             stop_event.wait(poll)
             continue
         process_job(job, log=log)
 
 
 class WorkerController:
-    """Gestiona el bucle del worker en un hilo demonio, con start/stop en caliente."""
+    """Manages the worker loop in a daemon thread, with hot start/stop."""
 
     def __init__(self) -> None:
         self._thread: threading.Thread | None = None
@@ -136,7 +136,7 @@ class WorkerController:
         self._started_at = None
 
     def start(self, log: LogFn = _noop) -> bool:
-        """Arranca el hilo del worker. Devuelve True si arrancó, False si ya corría."""
+        """Start the worker thread. Returns True if started, False if already running."""
         with self._lock:
             if self._thread and self._thread.is_alive():
                 return False
@@ -150,48 +150,48 @@ class WorkerController:
             )
             self._thread.start()
             self._started_at = timezone.now()
-            logger.info("Worker de scraping arrancado (hilo en segundo plano).")
+            logger.info("Scraping worker started (background thread).")
             return True
 
     def stop(self, timeout: float = 65.0) -> bool:
-        """Pide la parada y espera a que el hilo termine el trabajo en curso.
+        """Request stop and wait for the in-flight job to finish.
 
-        Devuelve True si estaba corriendo y se detuvo, False si no corría.
+        Returns True if it was running and stopped, False if it was not running.
         """
         with self._lock:
             if not (self._thread and self._thread.is_alive()):
                 return False
             self._stop.set()
-            hilo = self._thread
-        hilo.join(timeout=timeout)
-        detenido = not hilo.is_alive()
-        if detenido:
+            thread = self._thread
+        thread.join(timeout=timeout)
+        stopped = not thread.is_alive()
+        if stopped:
             self._started_at = None
-            logger.info("Worker de scraping detenido.")
-        return detenido
+            logger.info("Scraping worker stopped.")
+        return stopped
 
     def is_running(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
 
     def status(self) -> dict:
-        """Estado del worker + resumen de la cola."""
+        """Worker state + queue summary."""
         from django.db.models import Count
 
-        conteo = {
-            fila["status"]: fila["n"]
-            for fila in ScrapeJob.objects.values("status").annotate(n=Count("id"))
+        counts = {
+            row["status"]: row["n"]
+            for row in ScrapeJob.objects.values("status").annotate(n=Count("id"))
         }
         return {
             "running": self.is_running(),
             "started_at": self._started_at,
             "queue": {
-                "pending": conteo.get(ScrapeJob.Status.PENDING, 0),
-                "running": conteo.get(ScrapeJob.Status.RUNNING, 0),
-                "done": conteo.get(ScrapeJob.Status.DONE, 0),
-                "failed": conteo.get(ScrapeJob.Status.FAILED, 0),
+                "pending": counts.get(ScrapeJob.Status.PENDING, 0),
+                "running": counts.get(ScrapeJob.Status.RUNNING, 0),
+                "done": counts.get(ScrapeJob.Status.DONE, 0),
+                "failed": counts.get(ScrapeJob.Status.FAILED, 0),
             },
         }
 
 
-# Singleton usado por el arranque automático, la API y el comando.
+# Singleton used by the autostart, the API and the command.
 controller = WorkerController()

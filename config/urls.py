@@ -1,4 +1,4 @@
-"""Rutas raíz del proyecto CarScrapper."""
+"""Root URL routes for the CarScrapper project."""
 from django.contrib import admin
 from django.urls import include, path
 

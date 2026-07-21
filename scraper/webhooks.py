@@ -1,9 +1,9 @@
-"""Notificación por webhook saliente cuando un scrape en segundo plano termina.
+"""Outbound webhook notification when a background scrape finishes.
 
-Cuando el worker resuelve un `ScrapeJob`, hace un POST a la URL de callback del
-frontend (la del propio job, o `SCRAPER_WEBHOOK_URL` por defecto) con el VIN y
-los datos de mercado ya listos. Es best-effort: un fallo de webhook no rompe el
-scraping (el dato queda igualmente en caché y disponible al consultar el VIN).
+When the worker resolves a `ScrapeJob`, it POSTs to the frontend callback URL
+(the job's own, or `SCRAPER_WEBHOOK_URL` by default) with the VIN and the ready
+market data. Best-effort: a webhook failure does not break scraping (the data is
+cached and available on lookup anyway).
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def _payload(job, vehicle_model) -> dict:
     }
 
 
-def _payload_error(job) -> dict:
+def _error_payload(job) -> dict:
     return {
         "event": "scrape.failed",
         "vin": job.vin,
@@ -46,22 +46,22 @@ def _payload_error(job) -> dict:
 
 
 def notify(job, vehicle_model=None, *, error: bool = False) -> bool:
-    """Envía el webhook de un job. Devuelve True si se entregó (2xx).
+    """Send a job's webhook. Returns True if delivered (2xx).
 
-    Usa `job.webhook_url` si está, o `settings.SCRAPER_WEBHOOK_URL`. Si no hay
-    ninguna configurada, no hace nada (devuelve False sin error).
+    Uses `job.webhook_url` if set, else `settings.SCRAPER_WEBHOOK_URL`. If none is
+    configured, it does nothing (returns False without error).
     """
     url = job.webhook_url or getattr(settings, "SCRAPER_WEBHOOK_URL", "") or ""
     if not url:
         return False
 
-    payload = _payload_error(job) if error else _payload(job, vehicle_model)
+    payload = _error_payload(job) if error else _payload(job, vehicle_model)
     timeout = getattr(settings, "SCRAPER_WEBHOOK_TIMEOUT", 10)
     try:
         resp = requests.post(url, json=payload, timeout=timeout)
         resp.raise_for_status()
-        logger.info("Webhook enviado a %s para VIN %s (%s).", url, job.vin, job.status)
+        logger.info("Webhook sent to %s for VIN %s (%s).", url, job.vin, job.status)
         return True
     except requests.RequestException as exc:
-        logger.warning("Fallo al enviar webhook a %s: %s", url, exc)
+        logger.warning("Failed to send webhook to %s: %s", url, exc)
         return False

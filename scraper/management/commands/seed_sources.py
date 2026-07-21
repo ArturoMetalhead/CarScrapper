@@ -1,43 +1,42 @@
-"""Precarga fuentes de scraping por defecto.
+"""Seed default scraping sources.
 
-Uso:
+Usage:
     python manage.py seed_sources
 
-Es idempotente: si una fuente ya existe (por slug), la actualiza. Ajusta las
-plantillas de URL y los selectores según la estructura real de cada sitio.
+Idempotent: if a source already exists (by slug), it is updated. Adjust the URL
+templates and selectors to each site's real structure.
 """
 from django.core.management.base import BaseCommand
 
 from scraper.models import ScraperSource
 
-# Edmunds es la fuente principal (prioridad más baja = se intenta primero).
-# Las demás son respaldos: si Edmunds falla o desaparece, el sistema las usa
-# automáticamente. Edita/añade fuentes aquí o directamente desde el admin.
-FUENTES = [
+# Edmunds is the primary source (lowest priority = tried first). The others are
+# fallbacks: if Edmunds fails or disappears, the system uses them automatically.
+SOURCES = [
     {
         "slug": "edmunds",
         "name": "Edmunds",
         "base_url": "https://www.edmunds.com",
         "vin_path_template": "/inventory/vin/{vin}/",
-        # El scraping en segundo plano usa la URL por MODELO (marca/modelo/año).
+        # The background scraping uses the per-MODEL URL (make/model/year).
         "model_path_template": "/{make}/{model}/{year}/",
         "provider_key": "edmunds",
         "priority": 10,
         "is_active": True,
         "selectors": {
-            # Nodos de precio de los listados; se toma la mediana como precio de
-            # mercado del modelo/año. Verificado contra el HTML real de Edmunds.
+            # Listing price nodes; the median is taken as the model/year market
+            # price. Verified against Edmunds' real HTML.
             "model_price_nodes": ".heading-3",
         },
     },
     {
-        "slug": "fuente-respaldo",
-        "name": "Fuente de respaldo (ejemplo)",
+        "slug": "fallback-source",
+        "name": "Fallback source (example)",
         "base_url": "https://example.com",
         "vin_path_template": "/vehicle/{vin}",
         "provider_key": "generic",
         "priority": 100,
-        "is_active": False,  # desactivada hasta que la configures
+        "is_active": False,  # disabled until configured
         "selectors": {
             "estimated_price": ".estimated-price",
             "make": ".make",
@@ -50,16 +49,16 @@ FUENTES = [
 
 
 class Command(BaseCommand):
-    help = "Precarga las fuentes de scraping por defecto (Edmunds + respaldo)."
+    help = "Seed the default scraping sources (Edmunds + fallback)."
 
     def handle(self, *args, **options):
-        for datos in FUENTES:
-            slug = datos.pop("slug")
-            fuente, creada = ScraperSource.objects.update_or_create(
-                slug=slug, defaults=datos
+        for data in SOURCES:
+            slug = data.pop("slug")
+            source, created = ScraperSource.objects.update_or_create(
+                slug=slug, defaults=data
             )
-            verbo = "Creada" if creada else "Actualizada"
+            verb = "Created" if created else "Updated"
             self.stdout.write(
-                self.style.SUCCESS(f"{verbo}: {fuente.name} (prioridad {fuente.priority})")
+                self.style.SUCCESS(f"{verb}: {source.name} (priority {source.priority})")
             )
-        self.stdout.write(self.style.SUCCESS("Fuentes precargadas."))
+        self.stdout.write(self.style.SUCCESS("Sources seeded."))

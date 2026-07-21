@@ -1,13 +1,12 @@
-"""Fetch con navegador headless (Playwright).
+"""Headless browser fetch (Playwright).
 
-Renderiza páginas con JavaScript (como Edmunds) usando Chromium headless y
-devuelve un objeto compatible con lo que esperan los parsers (`.text`, `.url`,
-`.status_code`, `.ok`), para reutilizar la misma lógica de parseo que los
-providers basados en Requests.
+Renders JavaScript pages with headless Chromium and returns an object compatible
+with what parsers expect (`.text`, `.url`, `.status_code`, `.ok`), reusing the
+same parsing logic as the Requests-based providers.
 
-El import de Playwright es diferido (dentro de `_render`) para que el paquete
-de providers cargue aunque el binario del navegador todavía no esté instalado;
-el error solo aparece al intentar scrapear, con instrucciones claras.
+The Playwright import is deferred (inside `_render`) so the providers package
+loads even if the browser binary is not installed yet; the error only surfaces
+when scraping is attempted, with clear instructions.
 """
 from __future__ import annotations
 
@@ -18,7 +17,7 @@ from django.conf import settings
 
 from .base import ScraperError, VehicleNotFound
 
-# Flags para reducir la huella de automatización (anti-bot básico).
+# Flags to reduce the automation fingerprint (basic anti-bot).
 _LAUNCH_ARGS = [
     "--no-sandbox",
     "--disable-blink-features=AutomationControlled",
@@ -29,7 +28,7 @@ _STEALTH_INIT = "Object.defineProperty(navigator, 'webdriver', {get: () => undef
 
 @dataclass
 class RenderedResponse:
-    """Respuesta mínima compatible con los parsers (imita requests.Response)."""
+    """Minimal parser-compatible response (mimics requests.Response)."""
 
     url: str
     text: str
@@ -41,52 +40,45 @@ class RenderedResponse:
 
 
 class PlaywrightFetchMixin:
-    """Aporta un `fetch` que renderiza la página con Chromium headless.
+    """Provides a `fetch` that renders the page with headless Chromium.
 
-    Se combina con un provider de parseo (p. ej. GenericProvider) vía herencia
-    múltiple, poniéndolo primero en el MRO para que su `fetch` tenga prioridad.
+    Combined with a parsing provider (e.g. GenericProvider) via multiple
+    inheritance, placed first in the MRO so its `fetch` takes precedence.
     """
 
     def fetch(self, vin: str) -> RenderedResponse:
         url = self.source.build_url(vin)
-        # Selector opcional a esperar antes de leer el HTML (definido en la
-        # config de la fuente como selectors["wait_for"]).
+        # Optional selector to wait for before reading the HTML (defined in the
+        # source config as selectors["wait_for"]).
         wait_selector = (self.source.selectors or {}).get("wait_for")
         response = self._render(url, wait_selector)
 
         if response.status_code == 404:
-            raise VehicleNotFound(
-                f"{self.source.name} no tiene datos para el VIN {vin}."
-            )
+            raise VehicleNotFound(f"{self.source.name} has no data for VIN {vin}.")
         if not response.ok:
             raise ScraperError(
-                f"{self.source.name} respondió estado {response.status_code}."
+                f"{self.source.name} responded status {response.status_code}."
             )
         return response
 
     def _playwright_proxy(self) -> dict | None:
-        """Convierte SCRAPER_PROXY (URL) al formato de proxy de Playwright."""
+        """Convert SCRAPER_PROXY (URL) into Playwright's proxy format."""
         url = self.proxy_url
         if not url:
             return None
-        partes = urlparse(url)
-        servidor = f"{partes.scheme}://{partes.hostname}"
-        if partes.port:
-            servidor += f":{partes.port}"
-        proxy = {"server": servidor}
-        if partes.username:
-            proxy["username"] = partes.username
-        if partes.password:
-            proxy["password"] = partes.password
+        parts = urlparse(url)
+        server = f"{parts.scheme}://{parts.hostname}"
+        if parts.port:
+            server += f":{parts.port}"
+        proxy = {"server": server}
+        if parts.username:
+            proxy["username"] = parts.username
+        if parts.password:
+            proxy["password"] = parts.password
         return proxy
 
     def _playwright_cm(self):
-        """Devuelve el context manager de Playwright, con stealth si aplica.
-
-        Si `SCRAPER_USE_STEALTH` está activo y playwright-stealth instalado,
-        envuelve Playwright para aplicar las evasiones anti-detección a todas
-        las páginas automáticamente. Si no, usa Playwright normal.
-        """
+        """Return the Playwright context manager, with stealth if applicable."""
         from playwright.sync_api import sync_playwright
 
         if getattr(settings, "SCRAPER_USE_STEALTH", True):
@@ -95,7 +87,7 @@ class PlaywrightFetchMixin:
 
                 return Stealth().use_sync(sync_playwright())
             except ImportError:
-                pass  # sin stealth; seguimos con Playwright normal
+                pass  # no stealth; continue with plain Playwright
         return sync_playwright()
 
     def _render(self, url: str, wait_selector: str | None = None) -> RenderedResponse:
@@ -103,7 +95,7 @@ class PlaywrightFetchMixin:
             from playwright.sync_api import TimeoutError as PWTimeoutError
         except ImportError as exc:
             raise ScraperError(
-                "Playwright no está disponible. Instálalo con:\n"
+                "Playwright is not available. Install it with:\n"
                 "  pip install playwright\n"
                 "  python -m playwright install chromium"
             ) from exc
@@ -121,7 +113,7 @@ class PlaywrightFetchMixin:
                 if proxy:
                     context_kwargs["proxy"] = proxy
                 context = browser.new_context(**context_kwargs)
-                # Línea base anti-detección (por si playwright-stealth no está).
+                # Anti-detection baseline (in case playwright-stealth is absent).
                 context.add_init_script(_STEALTH_INIT)
                 page = context.new_page()
                 try:
@@ -131,8 +123,8 @@ class PlaywrightFetchMixin:
                         try:
                             page.wait_for_selector(wait_selector, timeout=timeout_ms)
                         except PWTimeoutError:
-                            # El selector no apareció; devolvemos lo que haya y
-                            # que el parser decida (o caiga a la siguiente fuente).
+                            # Selector never appeared; return what we have and let
+                            # the parser decide (or fall back to the next source).
                             pass
                     html = page.content()
                     final_url = page.url
@@ -141,5 +133,5 @@ class PlaywrightFetchMixin:
                 return RenderedResponse(url=final_url, text=html, status_code=status)
         except ScraperError:
             raise
-        except Exception as exc:  # noqa: BLE001 — normalizamos cualquier fallo del navegador
-            raise ScraperError(f"Error de Playwright en {url}: {exc}") from exc
+        except Exception as exc:  # noqa: BLE001 — normalize any browser failure
+            raise ScraperError(f"Playwright error at {url}: {exc}") from exc

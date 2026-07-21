@@ -10,6 +10,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from .base import BaseProvider, ScrapedVehicle, ScraperError, VehicleNotFound, parse_price
+from .nodriver_fetch import NodriverFetchMixin
 from .playwright_fetch import PlaywrightFetchMixin
 from .registry import register
 
@@ -76,4 +77,14 @@ class PlaywrightGenericProvider(PlaywrightFetchMixin, GenericProvider):
 
     Útil para sitios de fallback que también cargan datos por JavaScript. Usa
     los mismos selectores CSS de la fuente; solo cambia cómo obtiene el HTML.
+    """
+
+
+@register("nodriver")
+class NodriverGenericProvider(NodriverFetchMixin, GenericProvider):
+    """Igual que GenericProvider pero renderiza con un Chrome real (nodriver).
+
+    Para sitios de fallback protegidos por anti-bots (DataDome, Cloudflare) que
+    bloquean a Playwright/Selenium. Usa los mismos selectores CSS de la fuente;
+    solo cambia cómo obtiene el HTML.
     """

@@ -21,17 +21,20 @@ from bs4 import BeautifulSoup
 
 from .base import ScrapedVehicle, parse_price
 from .generic import GenericProvider
-from .playwright_fetch import PlaywrightFetchMixin
+from .nodriver_fetch import NodriverFetchMixin
 from .registry import register
 
 
 @register("edmunds")
-class EdmundsProvider(PlaywrightFetchMixin, GenericProvider):
+class EdmundsProvider(NodriverFetchMixin, GenericProvider):
     """Scraper específico para Edmunds.
 
-    Usa Playwright (por el mixin) para renderizar el JavaScript de la página y
-    luego extrae los datos del JSON-LD embebido; si no los encuentra, cae al
-    parseo por selectores CSS del GenericProvider.
+    Edmunds está protegido por DataDome, que bloquea con 403 a los navegadores
+    automatizados por Playwright/Selenium (se verificó en este proyecto). Por
+    eso usa `NodriverFetchMixin`: un Chrome real vía nodriver, con perfil
+    persistente y reintento, que atraviesa el bloqueo. Tras renderizar, extrae
+    los datos del JSON-LD embebido; si no los encuentra, cae al parseo por
+    selectores CSS del GenericProvider.
     """
 
     def parse(self, response, vin: str) -> ScrapedVehicle:

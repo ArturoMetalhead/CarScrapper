@@ -135,3 +135,23 @@ SCRAPER_USE_STEALTH = env.bool("SCRAPER_USE_STEALTH", default=True)
 # Proxy opcional para todo el scraping (residencial o de un servicio).
 # Formato: http://usuario:password@host:puerto  (o sin credenciales).
 SCRAPER_PROXY = env("SCRAPER_PROXY", default="")
+
+# --- nodriver (anti-DataDome) --------------------------------------------
+# El provider de Edmunds (y el genérico 'nodriver') usan un Chrome real vía
+# nodriver para atravesar DataDome, que bloquea a Playwright/Selenium.
+# Perfil persistente: acumula la cookie `datadome` y la "confianza" de IP, de
+# forma que en régimen normal pasa al primer intento. Debe ser una carpeta
+# dedicada al scraper (no tu perfil personal de Chrome). Por defecto, una
+# carpeta oculta dentro del proyecto.
+SCRAPER_NODRIVER_PROFILE_DIR = env(
+    "SCRAPER_NODRIVER_PROFILE_DIR",
+    default=str(BASE_DIR / ".chrome_profile_scraper"),
+)
+# Headful (ventana visible) es lo verificado contra DataDome. Headless puede
+# fallar y en un servidor sin pantalla requiere xvfb. Cambia bajo tu cuenta.
+SCRAPER_NODRIVER_HEADLESS = env.bool("SCRAPER_NODRIVER_HEADLESS", default=False)
+# Reintentos con recarga: un 403 de DataDome deja una cookie fresca que hace
+# pasar el siguiente intento en la misma sesión.
+SCRAPER_NODRIVER_RETRIES = env.int("SCRAPER_NODRIVER_RETRIES", default=3)
+# Segundos de espera tras navegar, para que el reto JS asiente.
+SCRAPER_NODRIVER_SETTLE = env.int("SCRAPER_NODRIVER_SETTLE", default=6)

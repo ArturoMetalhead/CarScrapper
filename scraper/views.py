@@ -209,3 +209,36 @@ class WorkerControlView(APIView):
             {"detail": "Invalid action. Use /api/worker/start/ or /api/worker/stop/."},
             status=status.HTTP_400_BAD_REQUEST,
         )
+
+
+class CrawlerControlView(APIView):
+    """Control the background crawler (proactive discovery + refresh).
+
+    GET  /api/crawler/         -> state (running, frontier size, pending by origin)
+    POST /api/crawler/start/   -> start the crawl planner
+    POST /api/crawler/stop/    -> stop it
+    """
+
+    @extend_schema(responses=OpenApiTypes.OBJECT)
+    def get(self, request):
+        from .crawler import planner
+        return Response(planner.status())
+
+    @extend_schema(request=None, responses=None)
+    def post(self, request, action=None):
+        from .crawler import planner
+
+        if action == "start":
+            started = planner.start()
+            detail = "Crawler started." if started else "The crawler was already running."
+            return Response({"ok": True, "detail": detail, **planner.status()})
+
+        if action == "stop":
+            stopped = planner.stop()
+            detail = "Crawler stopped." if stopped else "The crawler was not running."
+            return Response({"ok": True, "detail": detail, **planner.status()})
+
+        return Response(
+            {"detail": "Invalid action. Use /api/crawler/start/ or /api/crawler/stop/."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )

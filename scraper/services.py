@@ -144,8 +144,14 @@ def resolve_model(
     vm = _find_model(make, model, year)
     if is_fresh(vm):
         return vm, STATUS_READY
-    enqueue_scrape(make, model, year, webhook_url=webhook_url)
+    enqueue_scrape(make, model, year, webhook_url=webhook_url, origin="model_lookup")
     return vm, STATUS_PROCESSING
+
+
+# Job priorities (lower = processed first).
+PRIORITY_ONDEMAND = 10
+PRIORITY_REFRESH = 50
+PRIORITY_CRAWL = 100
 
 
 def enqueue_scrape(
@@ -155,12 +161,15 @@ def enqueue_scrape(
     trim: str = "",
     vin: str = "",
     webhook_url: str = "",
+    priority: int = PRIORITY_ONDEMAND,
+    origin: str = "lookup",
 ) -> ScrapeJob:
     """Enqueue a per-model scrape job, avoiding duplicates.
 
     If a pending or running job already exists for the same model, it is reused
-    (no new one is created). Works both for on-demand lookups and for prewarming
-    a list of VINs/models.
+    (no new one is created). Works for on-demand lookups, prewarming, and the
+    background crawler. If the new request is higher priority (lower number) than
+    the existing job, the existing job is bumped up so it jumps ahead.
     """
     existing = (
         ScrapeJob.objects.filter(make__iexact=make, model__iexact=model, year=year)
@@ -168,7 +177,6 @@ def enqueue_scrape(
         .first()
     )
     if existing:
-        # Fill in vin/webhook if the previous job lacked them and we have them now.
         changed = []
         if vin and not existing.vin:
             existing.vin = vin
@@ -176,12 +184,17 @@ def enqueue_scrape(
         if webhook_url and not existing.webhook_url:
             existing.webhook_url = webhook_url
             changed.append("webhook_url")
+        if priority < existing.priority:
+            existing.priority = priority
+            existing.origin = origin
+            changed += ["priority", "origin"]
         if changed:
             existing.save(update_fields=changed)
         return existing
 
     return ScrapeJob.objects.create(
-        make=make, model=model, year=year, trim=trim, vin=vin, webhook_url=webhook_url
+        make=make, model=model, year=year, trim=trim, vin=vin,
+        webhook_url=webhook_url, priority=priority, origin=origin,
     )
 
 

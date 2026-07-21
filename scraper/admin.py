@@ -26,9 +26,12 @@ class VehicleModelAdmin(admin.ModelAdmin):
 
 @admin.register(ScrapeJob)
 class ScrapeJobAdmin(admin.ModelAdmin):
-    list_display = ("__str__", "status", "vin", "attempts", "created_at", "finished_at")
+    list_display = (
+        "__str__", "status", "origin", "priority", "vin", "attempts",
+        "created_at", "finished_at",
+    )
     search_fields = ("vin", "make", "model")
-    list_filter = ("status", "make")
+    list_filter = ("status", "origin", "make")
     readonly_fields = ("created_at", "started_at", "finished_at")
 
 

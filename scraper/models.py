@@ -200,6 +200,13 @@ class ScrapeJob(models.Model):
         "Status", max_length=10, choices=Status.choices,
         default=Status.PENDING, db_index=True,
     )
+    # Lower number = processed first. On-demand lookups use a low value so they
+    # jump ahead of background crawl/refresh jobs.
+    priority = models.PositiveIntegerField("Priority", default=100, db_index=True)
+    origin = models.CharField(
+        "Origin", max_length=20, blank=True, default="lookup",
+        help_text="Who created the job: lookup, model_lookup, prewarm, crawl, refresh.",
+    )
     attempts = models.PositiveIntegerField("Attempts", default=0)
     last_error = models.TextField("Last error", blank=True, default="")
 
@@ -222,8 +229,8 @@ class ScrapeJob(models.Model):
     class Meta:
         verbose_name = "Scrape job"
         verbose_name_plural = "Scrape jobs"
-        ordering = ["created_at"]
-        indexes = [models.Index(fields=["status", "created_at"])]
+        ordering = ["priority", "created_at"]
+        indexes = [models.Index(fields=["status", "priority", "created_at"])]
 
     def __str__(self) -> str:
         target = " ".join(str(x) for x in (self.year, self.make, self.model, self.trim) if x)

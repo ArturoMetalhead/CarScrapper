@@ -184,6 +184,23 @@ SCRAPER_WORKER_POLL_SECONDS = env.int("SCRAPER_WORKER_POLL_SECONDS", default=5)
 # Max attempts per job before marking it failed.
 SCRAPER_JOB_MAX_ATTEMPTS = env.int("SCRAPER_JOB_MAX_ATTEMPTS", default=3)
 
+# --- Background crawler ---------------------------------------------------
+# Proactively discover models (via NHTSA), scrape and keep them fresh, on top of
+# on-demand lookups. Crawl jobs run at low priority so user lookups jump ahead.
+SCRAPER_CRAWL_ENABLED = env.bool("SCRAPER_CRAWL_ENABLED", default=True)
+# Makes to crawl (empty -> the mainstream default list in crawler.MAINSTREAM_MAKES).
+SCRAPER_CRAWL_MAKES = env.list("SCRAPER_CRAWL_MAKES", default=[])
+# How many recent model years to cover (e.g. 8 -> the last 8 years).
+SCRAPER_CRAWL_YEARS_BACK = env.int("SCRAPER_CRAWL_YEARS_BACK", default=8)
+# Planner cycle interval (s): how often to top up the queue and refresh stale.
+SCRAPER_CRAWL_PLAN_INTERVAL = env.int("SCRAPER_CRAWL_PLAN_INTERVAL", default=900)
+# Top up crawl jobs only when fewer than this many are pending.
+SCRAPER_CRAWL_QUEUE_MIN = env.int("SCRAPER_CRAWL_QUEUE_MIN", default=20)
+# Max models seeded/refreshed per planner cycle.
+SCRAPER_CRAWL_BATCH = env.int("SCRAPER_CRAWL_BATCH", default=50)
+# How long the discovered model frontier is cached before re-discovering.
+SCRAPER_CRAWL_DISCOVERY_TTL_HOURS = env.int("SCRAPER_CRAWL_DISCOVERY_TTL_HOURS", default=24)
+
 # --- Frontend notification webhook ----------------------------------------
 # URL POSTed to when a background scrape finishes. Can be overridden per request
 # (webhook_url field) or per job.

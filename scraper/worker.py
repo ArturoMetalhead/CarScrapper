@@ -42,7 +42,7 @@ def claim_next_job() -> ScrapeJob | None:
     """
     job = (
         ScrapeJob.objects.filter(status=ScrapeJob.Status.PENDING)
-        .order_by("created_at")
+        .order_by("priority", "created_at")
         .first()
     )
     if job is None:
@@ -59,9 +59,11 @@ def claim_next_job() -> ScrapeJob | None:
 def process_job(job: ScrapeJob, log: LogFn = _noop) -> None:
     """Scrape a job, cache the result, propagate to the VINs and notify."""
     label = " ".join(str(x) for x in (job.year, job.make, job.model) if x)
-    log(f"-> Scraping {label} (origin VIN: {job.vin or 'n/a'})...")
+    log(f"-> Scraping {label} (origin: {job.origin}, VIN: {job.vin or 'n/a'})...")
     job.attempts += 1
-    max_attempts = getattr(settings, "SCRAPER_JOB_MAX_ATTEMPTS", 3)
+    # Crawl jobs are best-effort discovery (a 404 model is not worth retrying);
+    # on-demand and refresh jobs get the full retry budget.
+    max_attempts = 1 if job.origin == "crawl" else getattr(settings, "SCRAPER_JOB_MAX_ATTEMPTS", 3)
 
     try:
         vm = scrape_model_data(job.make, job.model, job.year, job.trim)

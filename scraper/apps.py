@@ -18,36 +18,31 @@ class ScraperConfig(AppConfig):
         """
         from django.conf import settings
 
-        if not getattr(settings, "SCRAPER_WORKER_AUTOSTART", True):
-            return
         if not self._should_start():
             return
 
-        from .worker import controller
+        if getattr(settings, "SCRAPER_WORKER_AUTOSTART", True):
+            from .worker import controller
 
-        controller.start()
+            controller.start()
+
+        if getattr(settings, "SCRAPER_CRAWL_ENABLED", True):
+            from .crawler import planner
+
+            planner.start()
 
     @staticmethod
     def _should_start() -> bool:
-        argv = sys.argv
+        """Only autostart in a real server process (never in mgmt commands/scripts)."""
+        # WSGI/ASGI servers: their binary is argv[0] (gunicorn, uvicorn, ...).
+        argv0 = os.path.basename(sys.argv[0]).lower()
+        if any(server in argv0 for server in ("gunicorn", "uvicorn", "daphne", "hypercorn")):
+            return True
 
-        # Commands where we do NOT want the background worker.
-        excluded = {
-            "migrate", "makemigrations", "collectstatic", "shell", "dbshell",
-            "test", "createsuperuser", "seed_sources", "run_scrape_worker",
-            "warm_nodriver_profile", "loaddata", "dumpdata", "check",
-        }
-        if any(cmd in argv for cmd in excluded):
-            return False
+        # `manage.py runserver`: start only in the actual serving process, not the
+        # autoreloader parent (RUN_MAIN unset). With --noreload there is no parent.
+        if "runserver" in sys.argv:
+            return os.environ.get("RUN_MAIN") == "true" or "--noreload" in sys.argv
 
-        if "runserver" in argv:
-            # With autoreload only the child process (RUN_MAIN=true) should start
-            # it, not the reloader parent. With --noreload there is no RUN_MAIN.
-            if os.environ.get("RUN_MAIN") == "true":
-                return True
-            if "--noreload" in argv:
-                return True
-            return False
-
-        # WSGI/ASGI servers (gunicorn, uvicorn, daphne): no 'runserver' in argv.
-        return True
+        # Everything else (migrate, shell, tests, python -c, cron commands): no.
+        return False

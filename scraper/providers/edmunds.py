@@ -73,13 +73,12 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
         if m:
             suggested = self._num(m.group(1))
 
-        # 2) Price range "$low - $high" (e.g. MSRP range for new cars).
-        low = high = None
+        # 2) Candidate price ranges "$low - $high" (MSRP range for new cars).
+        candidate_ranges: list[tuple[Decimal, Decimal]] = []
         for rm in _RANGE_RE.finditer(text):
             lo, hi = self._num(rm.group(1)), self._num(rm.group(2))
             if lo is not None and hi is not None and lo <= hi:
-                low, high = lo, hi
-                break
+                candidate_ranges.append((lo, hi))
 
         # 3) Used listings: median of listing prices (fallback headline).
         selector = selectors.get("model_price_nodes", ".heading-3")
@@ -90,21 +89,21 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
                 prices.append(price)
         listing_median = Decimal(round(median(prices))) if prices else None
 
-        # Pick the headline price and record where it came from.
+        # Pick the headline price, its range and provenance.
+        low = high = None
         if suggested is not None:
             estimated, kind = suggested, "edmunds_suggested"
-        elif low is not None and high is not None:
+            # Only keep a range consistent with the suggested price (avoids
+            # picking up stray "$1,140 - ..." monthly-payment/fee ranges).
+            low, high = self._pick_range(candidate_ranges, suggested)
+        elif candidate_ranges:
+            low, high = candidate_ranges[0]
             estimated, kind = Decimal(round((low + high) / 2)), "msrp_range_mid"
         elif listing_median is not None:
             estimated, kind = listing_median, "used_listings_median"
+            low, high = min(prices), max(prices)
         else:
             estimated, kind = None, ""
-
-        # If there was no explicit range, use the listing spread as the range.
-        if low is None and prices:
-            low = min(prices)
-        if high is None and prices:
-            high = max(prices)
 
         return ScrapedVehicle(
             vin="",
@@ -126,6 +125,23 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
                 "listing_median": float(listing_median) if listing_median is not None else None,
             },
         )
+
+    @staticmethod
+    def _pick_range(
+        ranges: list[tuple[Decimal, Decimal]], reference: Decimal
+    ) -> tuple[Decimal | None, Decimal | None]:
+        """Choose the range consistent with the reference (suggested) price.
+
+        Prefers a range that contains the reference; otherwise a plausible
+        MSRP-like one near it. Rejects bogus ranges (e.g. a low monthly payment).
+        """
+        for lo, hi in ranges:
+            if lo <= reference <= hi:
+                return lo, hi
+        for lo, hi in ranges:
+            if lo >= reference * Decimal("0.5") and hi >= reference:
+                return lo, hi
+        return None, None
 
     @staticmethod
     def _num(raw: str) -> Decimal | None:

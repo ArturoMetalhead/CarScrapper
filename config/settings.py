@@ -162,6 +162,9 @@ SCRAPER_VIN_DECODE_TIMEOUT = env.int("SCRAPER_VIN_DECODE_TIMEOUT", default=15)
 # Horas que un dato de mercado (VehicleModel) se considera fresco antes de
 # reencolar su re-scraping.
 SCRAPER_CACHE_TTL_HOURS = env.int("SCRAPER_CACHE_TTL_HOURS", default=24)
+# Worker: arranca solo junto a la API (hilo en segundo plano). Ponlo en False
+# si prefieres correrlo aparte con `manage.py run_scrape_worker`.
+SCRAPER_WORKER_AUTOSTART = env.bool("SCRAPER_WORKER_AUTOSTART", default=True)
 # Worker: segundos entre sondeos cuando la cola está vacía.
 SCRAPER_WORKER_POLL_SECONDS = env.int("SCRAPER_WORKER_POLL_SECONDS", default=5)
 # Máximo de intentos por trabajo antes de marcarlo como fallido.

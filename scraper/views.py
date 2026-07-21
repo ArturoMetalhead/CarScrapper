@@ -135,3 +135,37 @@ class SourceListView(ListAPIView):
 
     queryset = ScraperSource.objects.all()
     serializer_class = ScraperSourceSerializer
+
+
+class WorkerControlView(APIView):
+    """Control del worker de scraping en segundo plano.
+
+    GET  /api/worker/         -> estado (corriendo + resumen de la cola)
+    POST /api/worker/start/   -> arranca el worker
+    POST /api/worker/stop/    -> lo detiene (termina el trabajo en curso)
+
+    El worker arranca solo con la API (SCRAPER_WORKER_AUTOSTART); estos endpoints
+    permiten pararlo y volver a arrancarlo en caliente.
+    """
+
+    def get(self, request):
+        from .worker import controller
+        return Response(controller.status())
+
+    def post(self, request, accion=None):
+        from .worker import controller
+
+        if accion == "start":
+            arrancado = controller.start()
+            detalle = "Worker arrancado." if arrancado else "El worker ya estaba corriendo."
+            return Response({"ok": True, "detail": detalle, **controller.status()})
+
+        if accion == "stop":
+            detenido = controller.stop()
+            detalle = "Worker detenido." if detenido else "El worker no estaba corriendo."
+            return Response({"ok": True, "detail": detalle, **controller.status()})
+
+        return Response(
+            {"detail": "Acción no válida. Usa /api/worker/start/ o /api/worker/stop/."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )

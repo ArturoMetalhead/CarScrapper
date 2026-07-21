@@ -9,6 +9,7 @@ from .views import (
     VehicleLookupView,
     VehiclePrewarmView,
     VehicleStatusView,
+    WorkerControlView,
 )
 
 app_name = "scraper"
@@ -16,6 +17,8 @@ app_name = "scraper"
 urlpatterns = [
     path("health/", HealthView.as_view(), name="health"),
     path("sources/", SourceListView.as_view(), name="source-list"),
+    path("worker/", WorkerControlView.as_view(), name="worker-status"),
+    path("worker/<str:accion>/", WorkerControlView.as_view(), name="worker-control"),
     path("vehicles/", VehicleListView.as_view(), name="vehicle-list"),
     path("vehicles/lookup/", VehicleLookupView.as_view(), name="vehicle-lookup"),
     path("vehicles/prewarm/", VehiclePrewarmView.as_view(), name="vehicle-prewarm"),

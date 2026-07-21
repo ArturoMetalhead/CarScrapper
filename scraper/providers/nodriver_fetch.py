@@ -94,6 +94,16 @@ class NodriverFetchMixin:
         return getattr(settings, "SCRAPER_NODRIVER_HEADLESS", False)
 
     @property
+    def _hide_window(self) -> bool:
+        """Hide the (headful) window off-screen so nothing shows on screen.
+
+        Headless mode is detected by DataDome, but a real headful browser moved
+        off-screen passes the block and shows no window. Anti-throttling flags
+        keep it rendering even though the window is not visible.
+        """
+        return getattr(settings, "SCRAPER_NODRIVER_HIDE_WINDOW", True)
+
+    @property
     def _retries(self) -> int:
         return max(1, getattr(settings, "SCRAPER_NODRIVER_RETRIES", 3))
 
@@ -150,6 +160,16 @@ class NodriverFetchMixin:
         import nodriver as uc
 
         browser_args = ["--profile-directory=Default"]
+        if not self._headless and self._hide_window:
+            # Real browser (passes DataDome) but window off-screen + no render
+            # throttling, so it stays invisible yet renders fully.
+            browser_args += [
+                "--window-position=-32000,-32000",
+                "--window-size=1366,900",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
+                "--disable-background-timer-throttling",
+            ]
         proxy = self.proxy_url
         if proxy:
             # Chrome only accepts a credential-less proxy via argument; auth would

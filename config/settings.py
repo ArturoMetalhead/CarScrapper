@@ -157,9 +157,13 @@ SCRAPER_NODRIVER_PROFILE_DIR = env(
     "SCRAPER_NODRIVER_PROFILE_DIR",
     default=str(BASE_DIR / ".chrome_profile_scraper"),
 )
-# Headful (visible window) is what was verified against DataDome. Headless may
-# fail and needs xvfb on a headless server. Change at your own risk.
+# Headful (visible window) is what was verified against DataDome; headless is
+# detected and blocked. Keep this False.
 SCRAPER_NODRIVER_HEADLESS = env.bool("SCRAPER_NODRIVER_HEADLESS", default=False)
+# Hide the headful window off-screen (no visible window) while still passing
+# DataDome. This is the recommended way to run "in the background" — headless
+# gets blocked. Only applies when SCRAPER_NODRIVER_HEADLESS is False.
+SCRAPER_NODRIVER_HIDE_WINDOW = env.bool("SCRAPER_NODRIVER_HIDE_WINDOW", default=True)
 # Retries with reload: a DataDome 403 sets a fresh cookie that lets the next
 # attempt in the same session pass.
 SCRAPER_NODRIVER_RETRIES = env.int("SCRAPER_NODRIVER_RETRIES", default=3)

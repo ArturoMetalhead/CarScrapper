@@ -1,4 +1,6 @@
 """Scraper API views."""
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import extend_schema
 from rest_framework import status
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.response import Response
@@ -20,6 +22,7 @@ from .services import STATUS_READY, VinDecodeError, resolve_model, resolve_vin
 class HealthView(APIView):
     """Simple liveness endpoint."""
 
+    @extend_schema(responses=OpenApiTypes.OBJECT)
     def get(self, request):
         return Response({"status": "ok"})
 
@@ -36,6 +39,7 @@ class VehicleLookupView(APIView):
       meanwhile the frontend can poll GET /api/vehicles/<vin>/.
     """
 
+    @extend_schema(request=VinLookupSerializer, responses=VehicleSerializer)
     def post(self, request):
         payload = VinLookupSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
@@ -75,6 +79,7 @@ class VehiclePrewarmView(APIView):
     already cached, processing if enqueued, or a decode error).
     """
 
+    @extend_schema(request=VinBatchSerializer, responses=None)
     def post(self, request):
         payload = VinBatchSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
@@ -102,6 +107,7 @@ class ModelLookupView(APIView):
       notifies via webhook when done.
     """
 
+    @extend_schema(request=ModelLookupSerializer, responses=VehicleModelSerializer)
     def post(self, request):
         payload = ModelLookupSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
@@ -131,6 +137,7 @@ class VehicleStatusView(APIView):
     job for it (useful for the frontend while it waits for the webhook).
     """
 
+    @extend_schema(responses=OpenApiTypes.OBJECT)
     def get(self, request, vin):
         vin = vin.strip().upper()
         vehicle = Vehicle.objects.filter(vin=vin).first()
@@ -179,10 +186,12 @@ class WorkerControlView(APIView):
     endpoints let you stop and start it again at runtime.
     """
 
+    @extend_schema(responses=OpenApiTypes.OBJECT)
     def get(self, request):
         from .worker import controller
         return Response(controller.status())
 
+    @extend_schema(request=None, responses=None)
     def post(self, request, action=None):
         from .worker import controller
 

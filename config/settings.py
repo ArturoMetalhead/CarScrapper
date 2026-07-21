@@ -34,6 +34,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     # Third party
     "rest_framework",
+    "drf_spectacular",
     "corsheaders",
     # Local apps
     "scraper",
@@ -114,6 +115,15 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "anon": "60/min",
     },
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+}
+
+# --- OpenAPI / Swagger (drf-spectacular) ----------------------------------
+SPECTACULAR_SETTINGS = {
+    "TITLE": "CarScrapper API",
+    "DESCRIPTION": "VIN lookup with background scraping, cache and webhook notifications.",
+    "VERSION": "1.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,
 }
 
 # --- CORS -----------------------------------------------------------------

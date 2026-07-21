@@ -21,6 +21,16 @@ class GenericProvider(BaseProvider):
 
     def fetch(self, vin: str) -> requests.Response:
         url = self.source.build_url(vin)
+        return self._get(url, f"el VIN {vin}")
+
+    def fetch_model(
+        self, make: str, model: str, year=None, trim: str = ""
+    ) -> requests.Response:
+        url = self.source.build_model_url(make, model, year, trim)
+        etiqueta = " ".join(str(x) for x in (year, make, model, trim) if x)
+        return self._get(url, f"el modelo {etiqueta}")
+
+    def _get(self, url: str, contexto: str) -> requests.Response:
         session = self.build_session()
         try:
             response = session.get(url, timeout=self.timeout)
@@ -29,7 +39,7 @@ class GenericProvider(BaseProvider):
 
         if response.status_code == 404:
             raise VehicleNotFound(
-                f"{self.source.name} no tiene datos para el VIN {vin}."
+                f"{self.source.name} no tiene datos para {contexto}."
             )
         if not response.ok:
             raise ScraperError(

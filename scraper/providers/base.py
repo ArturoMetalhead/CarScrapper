@@ -100,11 +100,35 @@ class BaseProvider:
             resultado.source_url = self.source.build_url(vin)
         return resultado
 
+    def scrape_model(
+        self, make: str, model: str, year: int | None = None, trim: str = ""
+    ) -> ScrapedVehicle:
+        """Scrapea los datos de mercado de un MODELO (para el worker de fondo).
+
+        Devuelve un `ScrapedVehicle` con vin vacío: solo interesan
+        make/model/year/trim y `estimated_price`.
+        """
+        response = self.fetch_model(make, model, year, trim)
+        resultado = self.parse_model(response, make, model, year, trim)
+        if not resultado.source_url:
+            resultado.source_url = self.source.build_model_url(make, model, year, trim)
+        return resultado
+
     # --- A implementar por subclases -------------------------------------
     def fetch(self, vin: str) -> requests.Response:
         raise NotImplementedError
 
     def parse(self, response: requests.Response, vin: str) -> ScrapedVehicle:
+        raise NotImplementedError
+
+    def fetch_model(
+        self, make: str, model: str, year: int | None = None, trim: str = ""
+    ) -> requests.Response:
+        raise NotImplementedError
+
+    def parse_model(
+        self, response, make: str, model: str, year: int | None = None, trim: str = ""
+    ) -> ScrapedVehicle:
         raise NotImplementedError
 
     # --- Utilidades compartidas ------------------------------------------

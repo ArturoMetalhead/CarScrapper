@@ -155,3 +155,20 @@ SCRAPER_NODRIVER_HEADLESS = env.bool("SCRAPER_NODRIVER_HEADLESS", default=False)
 SCRAPER_NODRIVER_RETRIES = env.int("SCRAPER_NODRIVER_RETRIES", default=3)
 # Segundos de espera tras navegar, para que el reto JS asiente.
 SCRAPER_NODRIVER_SETTLE = env.int("SCRAPER_NODRIVER_SETTLE", default=6)
+
+# --- Búsqueda por VIN, caché y cola en segundo plano ---------------------
+# Timeout de la decodificación de VIN con NHTSA.
+SCRAPER_VIN_DECODE_TIMEOUT = env.int("SCRAPER_VIN_DECODE_TIMEOUT", default=15)
+# Horas que un dato de mercado (VehicleModel) se considera fresco antes de
+# reencolar su re-scraping.
+SCRAPER_CACHE_TTL_HOURS = env.int("SCRAPER_CACHE_TTL_HOURS", default=24)
+# Worker: segundos entre sondeos cuando la cola está vacía.
+SCRAPER_WORKER_POLL_SECONDS = env.int("SCRAPER_WORKER_POLL_SECONDS", default=5)
+# Máximo de intentos por trabajo antes de marcarlo como fallido.
+SCRAPER_JOB_MAX_ATTEMPTS = env.int("SCRAPER_JOB_MAX_ATTEMPTS", default=3)
+
+# --- Webhook de notificación al frontend ---------------------------------
+# URL a la que se hace POST cuando un scrape en segundo plano termina. Puede
+# sobrescribirse por petición (campo webhook_url) o por trabajo.
+SCRAPER_WEBHOOK_URL = env("SCRAPER_WEBHOOK_URL", default="")
+SCRAPER_WEBHOOK_TIMEOUT = env.int("SCRAPER_WEBHOOK_TIMEOUT", default=10)

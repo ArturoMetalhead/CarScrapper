@@ -16,6 +16,9 @@ extraer datos, el sistema pase a la siguiente fuente configurada.
 from __future__ import annotations
 
 import json
+import re
+from decimal import Decimal, InvalidOperation
+from statistics import median
 
 from bs4 import BeautifulSoup
 
@@ -23,6 +26,11 @@ from .base import ScrapedVehicle, parse_price
 from .generic import GenericProvider
 from .nodriver_fetch import NodriverFetchMixin
 from .registry import register
+
+# Rango plausible de precio de coche (USD) para filtrar ruido al agregar.
+_PRECIO_MIN = 1000
+_PRECIO_MAX = 200000
+_RE_PRECIO = re.compile(r"\$\s?(\d{1,3}(?:,\d{3})+)")
 
 
 @register("edmunds")
@@ -48,6 +56,74 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
 
         # Respaldo: usa el parseo genérico por selectores CSS de la fuente.
         return super().parse(response, vin)
+
+    def parse_model(
+        self, response, make: str, model: str, year=None, trim: str = ""
+    ) -> ScrapedVehicle:
+        """Estima el precio de mercado del modelo/año agregando los listados.
+
+        La página de modelo de Edmunds no expone un precio único ni JSON-LD con
+        precio; muestra muchos listados (`.heading-3` por defecto, configurable
+        vía selectors['model_price_nodes']). Tomamos la MEDIANA de esos precios,
+        robusta frente a outliers (p. ej. un modelo de otro año colado en la
+        página).
+        """
+        soup = BeautifulSoup(response.text, "lxml")
+        selectores = self.source.selectors or {}
+
+        # 1) Precios desde nodos de listado (más fiable que el texto completo).
+        selector = selectores.get("model_price_nodes", ".heading-3")
+        precios: list[Decimal] = []
+        for nodo in soup.select(selector):
+            precio = self._precio_valido(nodo.get_text(" ", strip=True))
+            if precio is not None:
+                precios.append(precio)
+
+        # 2) Respaldo: regex sobre todo el texto si los nodos no dieron nada.
+        if not precios:
+            for m in _RE_PRECIO.finditer(soup.get_text(" ", strip=True)):
+                precio = self._precio_valido(m.group(0))
+                if precio is not None:
+                    precios.append(precio)
+
+        estimado = Decimal(round(median(precios))) if precios else None
+
+        return ScrapedVehicle(
+            vin="",
+            make=make,
+            model=model,
+            year=year,
+            trim=trim or "",
+            estimated_price=estimado,
+            currency="USD",
+            source_url=response.url,
+            raw_data={
+                "metodo": "mediana_listados",
+                "muestras": len(precios),
+                "min": float(min(precios)) if precios else None,
+                "max": float(max(precios)) if precios else None,
+                "mediana": float(estimado) if estimado is not None else None,
+            },
+        )
+
+    @staticmethod
+    def _precio_valido(texto: str) -> Decimal | None:
+        """Extrae el primer precio del texto y lo valida contra el rango plausible.
+
+        Los precios de Edmunds usan la coma como separador de MILLARES (formato
+        US: "$15,779"). Por eso quitamos las comas y parseamos como entero, en
+        vez de usar parse_price (que ante una sola coma asumiría decimal).
+        """
+        m = _RE_PRECIO.search(texto)
+        if not m:
+            return None
+        try:
+            valor = Decimal(m.group(1).replace(",", ""))
+        except (InvalidOperation, ValueError):
+            return None
+        if not (_PRECIO_MIN <= valor <= _PRECIO_MAX):
+            return None
+        return valor
 
     # --- Helpers ----------------------------------------------------------
     def _extraer_json_ld(self, soup: BeautifulSoup) -> dict | None:

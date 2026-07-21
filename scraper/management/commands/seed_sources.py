@@ -19,15 +19,15 @@ FUENTES = [
         "name": "Edmunds",
         "base_url": "https://www.edmunds.com",
         "vin_path_template": "/inventory/vin/{vin}/",
+        # El scraping en segundo plano usa la URL por MODELO (marca/modelo/año).
+        "model_path_template": "/{make}/{model}/{year}/",
         "provider_key": "edmunds",
         "priority": 10,
         "is_active": True,
         "selectors": {
-            # Respaldo por CSS si falla la extracción de JSON-LD. Ajustar al
-            # HTML real de Edmunds.
-            "estimated_price": "[data-testid='price'], .price",
-            "make": ".vehicle-make",
-            "model": ".vehicle-model",
+            # Nodos de precio de los listados; se toma la mediana como precio de
+            # mercado del modelo/año. Verificado contra el HTML real de Edmunds.
+            "model_price_nodes": ".heading-3",
         },
     },
     {

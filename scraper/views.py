@@ -4,13 +4,15 @@ from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import ScraperSource, Vehicle
+from .models import ScrapeJob, ScraperSource, Vehicle
 from .serializers import (
     ScraperSourceSerializer,
+    ScrapeJobSerializer,
     VehicleSerializer,
+    VinBatchSerializer,
     VinLookupSerializer,
 )
-from .services import AllSourcesFailed, scrape_vehicle
+from .services import STATUS_READY, VinDecodeError, resolve_vin
 
 
 class HealthView(APIView):
@@ -21,44 +23,96 @@ class HealthView(APIView):
 
 
 class VehicleLookupView(APIView):
-    """Recibe un VIN, hace scraping con fallback entre fuentes y devuelve el auto.
+    """Busca un vehículo por VIN de forma rápida (caché + scraping en fondo).
 
     POST /api/vehicles/lookup/
-    Body: {"vin": "1HGCM82633A004352"}
+    Body: {"vin": "1HGCM82633A004352", "webhook_url": "https://... (opcional)"}
 
-    Prueba las fuentes activas por prioridad; si la principal falla, usa la
-    siguiente automáticamente. Con `?refresh=true` fuerza un nuevo scraping
-    aunque el vehículo ya exista en caché.
+    - Si el dato de mercado está en caché y fresco -> 200 con el vehículo.
+    - Si no -> decodifica el VIN (NHTSA), encola el scraping por modelo y responde
+      202 "processing". Cuando el worker termine, avisa por webhook; mientras
+      tanto el frontend puede consultar GET /api/vehicles/<vin>/.
     """
 
     def post(self, request):
         entrada = VinLookupSerializer(data=request.data)
         entrada.is_valid(raise_exception=True)
         vin = entrada.validated_data["vin"]
-
-        refrescar = request.query_params.get("refresh", "").lower() == "true"
-
-        vehiculo = Vehicle.objects.filter(vin=vin).first()
-        if vehiculo and not refrescar:
-            return Response(VehicleSerializer(vehiculo).data)
+        webhook_url = entrada.validated_data.get("webhook_url", "")
 
         try:
-            scrapeado, fuente = scrape_vehicle(vin)
-        except AllSourcesFailed as exc:
+            vehiculo, estado = resolve_vin(vin, webhook_url=webhook_url)
+        except VinDecodeError as exc:
             return Response(
-                {"detail": str(exc), "errores_por_fuente": exc.errores},
-                status=status.HTTP_502_BAD_GATEWAY,
+                {"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST
             )
 
-        defaults = scrapeado.as_model_kwargs()
-        defaults["source"] = fuente
-        vehiculo, creado = Vehicle.objects.update_or_create(vin=vin, defaults=defaults)
-        codigo = status.HTTP_201_CREATED if creado else status.HTTP_200_OK
-        return Response(VehicleSerializer(vehiculo).data, status=codigo)
+        datos = VehicleSerializer(vehiculo).data
+        if estado == STATUS_READY:
+            return Response({"status": STATUS_READY, "vehicle": datos})
+
+        return Response(
+            {
+                "status": estado,
+                "vehicle": datos,
+                "detail": (
+                    "Datos de mercado en proceso. Se notificará por webhook al "
+                    "terminar; también puedes consultar el VIN más tarde."
+                ),
+                "poll_url": request.build_absolute_uri(f"/api/vehicles/{vin}/"),
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+
+class VehiclePrewarmView(APIView):
+    """Precarga (pre-scraping proactivo) de una lista de VINs.
+
+    POST /api/vehicles/prewarm/
+    Body: {"vins": ["...", "..."], "webhook_url": "https://... (opcional)"}
+
+    Decodifica cada VIN y encola su modelo. Devuelve el estado por VIN (ready si
+    ya estaba en caché, processing si se encoló, o error de decodificación).
+    """
+
+    def post(self, request):
+        entrada = VinBatchSerializer(data=request.data)
+        entrada.is_valid(raise_exception=True)
+        webhook_url = entrada.validated_data.get("webhook_url", "")
+
+        resultados = []
+        for vin in entrada.validated_data["vins"]:
+            try:
+                _, estado = resolve_vin(vin, webhook_url=webhook_url)
+                resultados.append({"vin": vin, "status": estado})
+            except VinDecodeError as exc:
+                resultados.append({"vin": vin, "status": "error", "detail": str(exc)})
+
+        return Response({"results": resultados}, status=status.HTTP_202_ACCEPTED)
+
+
+class VehicleStatusView(APIView):
+    """Estado de resolución de un VIN. GET /api/vehicles/<vin>/status/
+
+    Devuelve si el vehículo ya está resuelto y el estado del último trabajo de
+    scraping asociado (útil para el frontend mientras espera el webhook).
+    """
+
+    def get(self, request, vin):
+        vin = vin.strip().upper()
+        vehiculo = Vehicle.objects.filter(vin=vin).first()
+        job = (
+            ScrapeJob.objects.filter(vin=vin).order_by("-created_at").first()
+        )
+        return Response({
+            "vin": vin,
+            "vehicle": VehicleSerializer(vehiculo).data if vehiculo else None,
+            "job": ScrapeJobSerializer(job).data if job else None,
+        })
 
 
 class VehicleListView(ListAPIView):
-    """Lista los vehículos ya scrapeados. GET /api/vehicles/"""
+    """Lista los vehículos ya resueltos. GET /api/vehicles/"""
 
     queryset = Vehicle.objects.all()
     serializer_class = VehicleSerializer
@@ -70,6 +124,10 @@ class VehicleDetailView(RetrieveAPIView):
     queryset = Vehicle.objects.all()
     serializer_class = VehicleSerializer
     lookup_field = "vin"
+
+    def get_object(self):
+        self.kwargs[self.lookup_field] = self.kwargs[self.lookup_field].strip().upper()
+        return super().get_object()
 
 
 class SourceListView(ListAPIView):

@@ -61,12 +61,22 @@ class NodriverFetchMixin:
 
     def fetch(self, vin: str) -> RenderedResponse:
         url = self.source.build_url(vin)
+        return self._fetch_url(url, f"el VIN {vin}")
+
+    def fetch_model(
+        self, make: str, model: str, year=None, trim: str = ""
+    ) -> RenderedResponse:
+        url = self.source.build_model_url(make, model, year, trim)
+        etiqueta = " ".join(str(x) for x in (year, make, model, trim) if x)
+        return self._fetch_url(url, f"el modelo {etiqueta}")
+
+    def _fetch_url(self, url: str, contexto: str) -> RenderedResponse:
         wait_selector = (self.source.selectors or {}).get("wait_for")
         response = self._render(url, wait_selector)
 
         if response.status_code == 404:
             raise VehicleNotFound(
-                f"{self.source.name} no tiene datos para el VIN {vin}."
+                f"{self.source.name} no tiene datos para {contexto}."
             )
         if not response.ok:
             raise ScraperError(
@@ -181,6 +191,10 @@ class NodriverFetchMixin:
                 html = await page.get_content()
                 titulo = await page.evaluate("document.title") or ""
                 if not _esta_bloqueado(html, str(titulo)):
+                    # Dispara la carga diferida (listados, precios) haciendo
+                    # scroll y recapturamos el HTML ya completo.
+                    await self._cargar_diferido(page)
+                    html = await page.get_content()
                     final_url = await page.evaluate("location.href") or url
                     return RenderedResponse(url=str(final_url), text=html, status_code=200)
                 if intento < self._retries:
@@ -191,3 +205,18 @@ class NodriverFetchMixin:
             return RenderedResponse(url=str(final_url), text=html, status_code=403)
         finally:
             browser.stop()
+
+    async def _cargar_diferido(self, page) -> None:
+        """Hace scroll para forzar la carga diferida (lazy-load) de contenido.
+
+        Muchas páginas (Edmunds incluido) cargan listados/precios solo al hacer
+        scroll. Bajamos por la página en varios pasos dando tiempo a renderizar.
+        """
+        try:
+            for _ in range(4):
+                await page.evaluate("window.scrollBy(0, document.body.scrollHeight/4)")
+                await asyncio.sleep(1.0)
+            await page.evaluate("window.scrollTo(0, 0)")
+            await asyncio.sleep(0.5)
+        except Exception:  # noqa: BLE001 — el scroll es best-effort
+            pass

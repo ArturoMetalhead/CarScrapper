@@ -224,6 +224,17 @@ function renderVehicle(v, state) {
     </div>`;
 }
 
+function processingBox(label) {
+  return `<div style="text-align:center; padding:26px 16px; background:var(--card2);
+      border:1px solid var(--line); border-radius:12px; margin-top:4px;">
+    <div class="spin" style="width:28px; height:28px; margin:0 auto 14px"></div>
+    <div style="font-size:16px; font-weight:700">Procesando…</div>
+    <div class="muted" style="font-size:13px; margin-top:6px">
+      Buscando el precio de <b style="color:var(--tx)">${label || "el vehículo"}</b> ·
+      consultando la web, puede tardar unos segundos.</div>
+  </div>`;
+}
+
 let pollTimer = null;
 async function lookupVin() {
   clearInterval(pollTimer);
@@ -232,28 +243,56 @@ async function lookupVin() {
   box.innerHTML = `<div class="muted"><span class="spin"></span> Buscando…</div>`;
   const { status, data } = await api("/vehicles/lookup/", "POST", { vin });
   if (status === 400) { box.innerHTML = `<div class="badge proc">${data.detail || "VIN inválido"}</div>`; return; }
-  box.innerHTML = renderVehicle(data.vehicle, data.status);
-  if (data.status === "processing") {
+  if (data.status !== "processing") { box.innerHTML = renderVehicle(data.vehicle, data.status); return; }
+  {
+    const v0 = data.vehicle || {};
+    box.innerHTML = processingBox([v0.year, v0.make, v0.model].filter(Boolean).join(" ") || vin);
+    let tries = 0;
     pollTimer = setInterval(async () => {
+      tries++;
       const s = await api(`/vehicles/${vin}/status/`);
-      const v = s.data.vehicle;
+      const v = s.data.vehicle, job = s.data.job;
       if (v && v.estimated_price != null) {
         clearInterval(pollTimer);
         box.innerHTML = renderVehicle(v, "ready");
         loadRecent();
+        return;
+      }
+      if ((job && job.status === "failed") || tries > 40) {
+        clearInterval(pollTimer);
+        box.innerHTML = `<div class="badge proc">No se pudo obtener el precio (la fuente no está disponible ahora).</div>`;
       }
     }, 3000);
   }
 }
 
 async function lookupModel() {
+  clearInterval(pollTimer);
   const mk = document.getElementById("mk").value.trim();
   const mo = document.getElementById("mo").value.trim();
   const yr = parseInt(document.getElementById("yr").value) || null;
   const box = document.getElementById("result");
   box.innerHTML = `<div class="muted"><span class="spin"></span> Buscando…</div>`;
   const { data } = await api("/models/lookup/", "POST", { make: mk, model: mo, year: yr });
-  box.innerHTML = renderVehicle(data.model_data, data.status);
+  if (data.status !== "processing") { box.innerHTML = renderVehicle(data.model_data, data.status); return; }
+  {
+    box.innerHTML = processingBox([yr, mk, mo].filter(Boolean).join(" "));
+    let tries = 0;
+    pollTimer = setInterval(async () => {
+      tries++;
+      const { data: d } = await api("/models/lookup/", "POST", { make: mk, model: mo, year: yr });
+      if (d.status === "ready") {
+        clearInterval(pollTimer);
+        box.innerHTML = renderVehicle(d.model_data, "ready");
+        loadRecent();
+        return;
+      }
+      if (tries > 30) {
+        clearInterval(pollTimer);
+        box.innerHTML = `<div class="badge proc">No se pudo obtener el precio (la fuente no está disponible ahora).</div>`;
+      }
+    }, 4000);
+  }
 }
 
 async function refreshStatus() {

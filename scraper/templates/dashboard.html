@@ -151,7 +151,7 @@ function error(msg){ out.innerHTML=`<div class="err fade">${msg}</div>`; }
 function priceBlocks(v){
   // Three labelled prices: minimum, estimated average, maximum.
   const est = `<div class="pblock main">
-      <div class="pcap">Precio Promedio Estimado</div>
+      <div class="pcap">Precio Sugerido</div>
       <div class="pval">${money(v.estimated_price)}</div>
     </div>`;
   if(v.price_low==null || v.price_high==null){

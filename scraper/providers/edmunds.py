@@ -29,6 +29,15 @@ _PRICE_RE = re.compile(r"\$\s?(\d{1,3}(?:,\d{3})+)")
 # Edmunds' own labeled values: "Edmunds suggests you pay $X" and a "$X - $Y" range.
 _SUGGEST_RE = re.compile(r"suggests?\s+you\s+pay[^$]{0,25}\$([\d,]{4,})", re.I)
 _RANGE_RE = re.compile(r"\$([\d,]{4,})\s*[-–—]\s*\$([\d,]{4,})")
+# Edmunds' own labeled MSRP span across trims: "Price Range: $X - $Y". This is
+# the authoritative range; anchoring to the label avoids catching a savings /
+# lease / payment figure elsewhere on the page.
+_PRICERANGE_RE = re.compile(
+    r"price\s+range\s*:?\s*\$([\d,]{4,})\s*[-–—]\s*\$([\d,]{4,})", re.I
+)
+# Marketing text that reuses the price CSS class (.heading-3) but is NOT a car
+# price, e.g. "Save as much as $2,544 with Edmunds".
+_NON_PRICE_RE = re.compile(r"save\s+as\s+much\s+as|with\s+edmunds", re.I)
 
 
 @register("edmunds")
@@ -109,52 +118,77 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
         """Extract the model/year market price using Edmunds' own numbers.
 
         Priority:
-          1. "Edmunds suggests you pay $X" (new cars) -> headline price.
-          2. A "$X - $Y" range (MSRP range for new cars) -> midpoint as headline.
+          1. Edmunds' labeled "Price Range: $X - $Y" (MSRP span across trims) ->
+             the min/max; the estimate is "suggests you pay" when it falls inside
+             that span, otherwise the range midpoint.
+          2. "Edmunds suggests you pay $X" with a sanity-checked generic range.
           3. Median of the used listings (`.heading-3`, configurable via
              selectors['model_price_nodes']) -> headline for used cars.
 
-        `price_low`/`price_high` hold the range (explicit if present, otherwise
-        the listing spread) and `price_kind` records the provenance.
+        The range is read from Edmunds' OWN labeled span rather than any "$X - $Y"
+        on the page, so a savings/lease/payment figure can't pollute it.
+        `price_kind` records the provenance.
         """
         soup = BeautifulSoup(response.text, "lxml")
         selectors = self.source.selectors or {}
         text = soup.get_text(" ", strip=True)
 
+        # Edmunds' "suggests you pay $X" target price (new cars).
         suggested = None
         m = _SUGGEST_RE.search(text)
         if m:
             suggested = self._num(m.group(1))
 
+        # Edmunds' OWN labeled "Price Range: $X - $Y" (authoritative MSRP span).
+        labeled_range = None
+        lm = _PRICERANGE_RE.search(text)
+        if lm:
+            lo, hi = self._num(lm.group(1)), self._num(lm.group(2))
+            if lo is not None and hi is not None and lo <= hi:
+                labeled_range = (lo, hi)
+
+        # Generic $X-$Y ranges anywhere on the page (noisy; fallback only).
         candidate_ranges: list[tuple[Decimal, Decimal]] = []
         for rm in _RANGE_RE.finditer(text):
             lo, hi = self._num(rm.group(1)), self._num(rm.group(2))
             if lo is not None and hi is not None and lo <= hi:
                 candidate_ranges.append((lo, hi))
 
+        # Used-car listing prices. Skip marketing nodes ("Save as much as $X with
+        # Edmunds") that share the .heading-3 class but are not car prices.
         selector = selectors.get("model_price_nodes", ".heading-3")
         prices: list[Decimal] = []
         for node in soup.select(selector):
-            price = self._valid_price(node.get_text(" ", strip=True))
+            node_text = node.get_text(" ", strip=True)
+            if _NON_PRICE_RE.search(node_text):
+                continue
+            price = self._valid_price(node_text)
             if price is not None:
                 prices.append(price)
         listing_median = listing_low = listing_high = None
         if prices:
             listing_median, listing_low, listing_high = self._robust_listing_stats(prices)
 
-        # Drop ranges with an implausible spread: a real MSRP range across trims
-        # is narrow, whereas a stray "$2,544 - $30,000" (a lease "due at signing"
-        # next to an MSRP) is wide and pollutes the low bound.
         msrp_ranges = [
             (lo, hi) for lo, hi in candidate_ranges if hi <= lo * Decimal("2.5")
         ]
 
         # Pick the headline price, its range and provenance.
         low = high = None
-        if suggested is not None:
+        if labeled_range is not None:
+            low, high = labeled_range
+            if suggested is not None:
+                # Headline Edmunds' realistic "suggests you pay" price, and extend
+                # the MSRP span to contain it: the target price can sit just below
+                # the span, in which case it becomes the minimum (or vice versa).
+                estimated, kind = suggested, "edmunds_suggested"
+                low, high = min(low, suggested), max(high, suggested)
+            else:
+                estimated, kind = Decimal(round((low + high) / 2)), "msrp_range_mid"
+        elif suggested is not None:
             estimated, kind = suggested, "edmunds_suggested"
-            # Only keep a range consistent with the suggested price (avoids
-            # picking up stray monthly-payment/fee/"due at signing" figures).
+            # No labeled span: only keep a generic range consistent with the
+            # suggested price (rejects stray payment/fee/"due at signing" figures).
             low, high = self._pick_range(candidate_ranges, suggested)
         elif msrp_ranges:
             low, high = msrp_ranges[0]

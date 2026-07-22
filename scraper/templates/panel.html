@@ -213,7 +213,7 @@ function renderVehicle(v, state) {
   const stateBadge = state === "ready"
     ? `<span class="badge ready">listo</span>`
     : `<span class="badge proc"><span class="spin"></span> procesando</span>`;
-  const est = `<div class="pblock main"><div class="pcap">Precio Promedio Estimado</div>` +
+  const est = `<div class="pblock main"><div class="pcap">Precio Sugerido</div>` +
     `<div class="pval">${fmt(v.estimated_price)}</div></div>`;
   const prices = (v.price_low != null && v.price_high != null)
     ? `<div class="prices">

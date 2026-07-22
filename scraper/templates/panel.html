@@ -50,8 +50,15 @@
     .result { margin-top:16px; }
     .result .head { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
     .result .title { font-size:20px; font-weight:700; }
-    .price { font-size:40px; font-weight:800; color:var(--ok); font-variant-numeric:tabular-nums; }
-    .range { color:var(--mut); font-size:14px; margin-top:2px; }
+    .prices { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin:6px 0 4px; }
+    .prices.one { grid-template-columns:1fr; }
+    .pblock { background:var(--card2); border:1px solid var(--line); border-radius:11px;
+      padding:12px 10px; text-align:center; }
+    .pblock.main { border-color:rgba(52,211,153,.5); background:#10241f; }
+    .pcap { font-size:11px; text-transform:uppercase; letter-spacing:.4px; color:var(--mut); margin-bottom:6px; }
+    .pval { font-size:20px; font-weight:800; font-variant-numeric:tabular-nums; }
+    .pblock.main .pval { font-size:30px; color:var(--ok); }
+    @media (max-width:520px){ .prices { grid-template-columns:1fr; } }
     .badge { font-size:11px; padding:3px 9px; border-radius:999px;
       border:1px solid var(--line); color:var(--mut); }
     .badge.ready { color:var(--ok); border-color:var(--ok); }
@@ -173,7 +180,7 @@
       <div class="card">
         <h2>Últimos resueltos</h2>
         <table>
-          <thead><tr><th>Vehículo</th><th>Tipo</th><th style="text-align:right">Precio</th></tr></thead>
+          <thead><tr><th>Vehículo</th><th>Fuente</th><th style="text-align:right">Precio</th></tr></thead>
           <tbody id="recent"><tr><td colspan="3" class="muted">—</td></tr></tbody>
         </table>
       </div>
@@ -206,16 +213,21 @@ function renderVehicle(v, state) {
   const stateBadge = state === "ready"
     ? `<span class="badge ready">listo</span>`
     : `<span class="badge proc"><span class="spin"></span> procesando</span>`;
-  const kind = v.price_kind ? `<span class="badge kind">${v.price_kind}</span>` : "";
-  const range = (v.price_low || v.price_high)
-    ? `Rango ${fmt(v.price_low)} – ${fmt(v.price_high)}` : "";
+  const est = `<div class="pblock main"><div class="pcap">Precio Promedio Estimado</div>` +
+    `<div class="pval">${fmt(v.estimated_price)}</div></div>`;
+  const prices = (v.price_low != null && v.price_high != null)
+    ? `<div class="prices">
+        <div class="pblock"><div class="pcap">Precio Mínimo</div><div class="pval">${fmt(v.price_low)}</div></div>
+        ${est}
+        <div class="pblock"><div class="pcap">Precio Máximo</div><div class="pval">${fmt(v.price_high)}</div></div>
+      </div>`
+    : `<div class="prices one">${est}</div>`;
   return `
     <div class="head">
       <span class="title">${[v.year, v.make, v.model].filter(Boolean).join(" ")}</span>
-      ${stateBadge} ${kind}
+      ${stateBadge}
     </div>
-    <div class="price">${fmt(v.estimated_price)}</div>
-    <div class="range">${range}</div>
+    ${prices}
     <div class="meta">
       ${v.vin ? `<div class="k">VIN</div><div>${v.vin}</div>` : ""}
       ${v.trim ? `<div class="k">Versión</div><div>${v.trim}</div>` : ""}
@@ -386,7 +398,7 @@ async function loadRecent() {
       ? rows.map(v => `<tr>
           <td>${[v.year, v.make, v.model].filter(Boolean).join(" ")}<br>
               <span class="muted" style="font-size:11px">${v.vin || ""}</span></td>
-          <td class="muted">${v.price_kind || "—"}</td>
+          <td class="muted">${v.source_name || "—"}</td>
           <td class="num">${fmt(v.estimated_price)}</td></tr>`).join("")
       : `<tr><td colspan="3" class="muted">Aún no hay vehículos.</td></tr>`;
   } catch (e) {}

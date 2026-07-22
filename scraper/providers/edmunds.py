@@ -142,15 +142,22 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
         if prices:
             listing_median, listing_low, listing_high = self._robust_listing_stats(prices)
 
+        # Drop ranges with an implausible spread: a real MSRP range across trims
+        # is narrow, whereas a stray "$2,544 - $30,000" (a lease "due at signing"
+        # next to an MSRP) is wide and pollutes the low bound.
+        msrp_ranges = [
+            (lo, hi) for lo, hi in candidate_ranges if hi <= lo * Decimal("2.5")
+        ]
+
         # Pick the headline price, its range and provenance.
         low = high = None
         if suggested is not None:
             estimated, kind = suggested, "edmunds_suggested"
             # Only keep a range consistent with the suggested price (avoids
-            # picking up stray "$1,140 - ..." monthly-payment/fee ranges).
+            # picking up stray monthly-payment/fee/"due at signing" figures).
             low, high = self._pick_range(candidate_ranges, suggested)
-        elif candidate_ranges:
-            low, high = candidate_ranges[0]
+        elif msrp_ranges:
+            low, high = msrp_ranges[0]
             estimated, kind = Decimal(round((low + high) / 2)), "msrp_range_mid"
         elif listing_median is not None:
             estimated, kind = listing_median, "used_listings_median"
@@ -183,16 +190,22 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
     def _pick_range(
         ranges: list[tuple[Decimal, Decimal]], reference: Decimal
     ) -> tuple[Decimal | None, Decimal | None]:
-        """Choose the range consistent with the reference (suggested) price.
+        """Choose an MSRP-like range consistent with the reference (suggested) price.
 
-        Prefers a range that contains the reference; otherwise a plausible
-        MSRP-like one near it. Rejects bogus ranges (e.g. a low monthly payment).
+        Only accepts ranges whose bounds sit in a sane band around the reference,
+        so stray figures on the page (a lease "due at signing", a savings amount,
+        a monthly payment) can't become the range. E.g. a "$2,544 - $30,000" span
+        on a ~$26k new car is rejected because its low is far below the suggested
+        price. Prefers a range that brackets the reference.
         """
-        for lo, hi in ranges:
+        lo_floor = reference * Decimal("0.55")
+        hi_ceil = reference * Decimal("2.5")
+        sane = [(lo, hi) for lo, hi in ranges if lo >= lo_floor and hi <= hi_ceil]
+        for lo, hi in sane:  # prefer a range that brackets the reference
             if lo <= reference <= hi:
                 return lo, hi
-        for lo, hi in ranges:
-            if lo >= reference * Decimal("0.5") and hi >= reference:
+        for lo, hi in sane:  # otherwise the first sane range reaching it
+            if hi >= reference:
                 return lo, hi
         return None, None
 

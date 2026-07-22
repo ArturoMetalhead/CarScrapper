@@ -266,16 +266,26 @@ async function refreshStatus() {
       const until = w.cooling_until ? new Date(w.cooling_until) : null;
       const secs = until ? Math.max(0, Math.round((until - new Date()) / 1000)) : null;
       const eta = secs != null ? "~" + secs + "s" : "—";
-      document.getElementById("workerTxt").textContent = "enfriándose";
+      const rotating = w.block_phase === "rotating";
+      const color = rotating ? "#fbbf24" : "#f87171";
       led.classList.remove("on");
-      led.style.background = "#fbbf24"; led.style.boxShadow = "0 0 8px #fbbf24";
+      led.style.background = color; led.style.boxShadow = "0 0 8px " + color;
+      document.getElementById("workerTxt").textContent = rotating ? "recuperando" : "IP bloqueada";
       cool.style.display = "block";
-      cool.innerHTML = `⏳ <b>Enfriándose tras bloqueo (403)</b> · ${w.consecutive_blocks} bloqueo(s) seguidos · reanuda en ${eta}`;
+      cool.innerHTML = rotating
+        ? `🔄 <b>Reintentando con sesión nueva</b> (perfil rotado) · intento ${w.consecutive_blocks} · en ${eta}`
+        : `⏳ <b>Enfriando — IP bloqueada (403)</b> · ${w.consecutive_blocks} bloqueos · reanuda en ${eta}`;
       alertEl.style.display = "block";
-      document.getElementById("alertTxt").innerHTML =
-        `<b>Cuenta/IP temporalmente bloqueada por DataDome (403).</b> El scraping se pausó automáticamente ` +
-        `(${w.consecutive_blocks} bloqueo(s) seguidos) y se reanudará solo en ${eta}. No hace falta hacer nada; ` +
-        `si se repite mucho, sube <code>SCRAPER_WORKER_DELAY</code> para bajar el ritmo.`;
+      alertEl.style.background = rotating ? "rgba(251,191,36,.14)" : "rgba(248,113,113,.14)";
+      alertEl.style.borderColor = rotating ? "rgba(251,191,36,.6)" : "rgba(248,113,113,.6)";
+      alertEl.style.color = rotating ? "#fde68a" : "#fecaca";
+      document.getElementById("alertTxt").innerHTML = rotating
+        ? `<b>Bloqueo momentáneo — recuperando con una sesión nueva.</b> La cookie/sesión se bloqueó (tu ` +
+          `navegador manual sigue entrando); el worker rotó a un perfil limpio y reintenta en ${eta}. ` +
+          `Suele recuperarse solo en segundos.`
+        : `<b>IP temporalmente bloqueada por DataDome (403).</b> Las sesiones nuevas también se bloquearon, ` +
+          `así que parece bloqueo de IP. El worker enfría y reanuda solo en ${eta}. Si se repite mucho, sube ` +
+          `<code>SCRAPER_WORKER_DELAY</code> o usa un proxy.`;
     } else {
       led.style.background = ""; led.style.boxShadow = "";
       led.classList.toggle("on", w.running);

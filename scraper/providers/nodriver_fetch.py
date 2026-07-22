@@ -50,6 +50,33 @@ def _is_blocked(html: str, title: str) -> bool:
     return any(marker in low for marker in _BLOCK_MARKERS)
 
 
+def profile_dir() -> str:
+    """Directory of the scraper's persistent Chrome profile."""
+    path = getattr(settings, "SCRAPER_NODRIVER_PROFILE_DIR", "") or os.path.join(
+        str(settings.BASE_DIR), ".chrome_profile_scraper"
+    )
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def reset_profile() -> bool:
+    """Delete the Chrome profile so the next launch starts a FRESH session.
+
+    A DataDome block is usually on the session/cookie (a manual browser on the
+    same IP still works), so dropping the banned `datadome` cookie and warming a
+    clean profile gets back in. Safe between scrapes (Chrome is closed then).
+    """
+    import shutil
+
+    path = profile_dir()
+    try:
+        shutil.rmtree(path, ignore_errors=True)
+        os.makedirs(path, exist_ok=True)
+        return True
+    except Exception:  # noqa: BLE001 — best-effort
+        return False
+
+
 class NodriverFetchMixin:
     """Provides a `fetch` that renders with a real Chrome via nodriver.
 
@@ -85,11 +112,7 @@ class NodriverFetchMixin:
 
     @property
     def _profile_dir(self) -> str:
-        path = getattr(settings, "SCRAPER_NODRIVER_PROFILE_DIR", "") or os.path.join(
-            str(settings.BASE_DIR), ".chrome_profile_scraper"
-        )
-        os.makedirs(path, exist_ok=True)
-        return path
+        return profile_dir()
 
     @property
     def _headless(self) -> bool:

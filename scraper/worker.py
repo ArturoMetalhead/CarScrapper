@@ -25,6 +25,7 @@ from django.utils import timezone
 from . import webhooks
 from .models import ScrapeJob
 from .providers.base import BlockedError
+from .providers.nodriver_fetch import reset_profile
 from .services import (
     PRIORITY_ONDEMAND,
     AllSourcesFailed,
@@ -33,7 +34,8 @@ from .services import (
 )
 
 # Live worker state (block/cool-down), surfaced in the status endpoint.
-WORKER_STATE = {"cooling_until": None, "consecutive_blocks": 0}
+# block_phase: "rotating" (fresh-session retries) | "ip_cooldown" | None.
+WORKER_STATE = {"cooling_until": None, "consecutive_blocks": 0, "block_phase": None}
 
 logger = logging.getLogger(__name__)
 
@@ -181,15 +183,27 @@ def run_loop(
         try:
             process_job(job, log=log)
         except BlockedError:
-            # DataDome flagged us. Cool down (exponential backoff) and auto-resume.
             WORKER_STATE["consecutive_blocks"] += 1
             n = WORKER_STATE["consecutive_blocks"]
-            cooldown = min(max_cd, base_cd * (2 ** (n - 1)))
-            WORKER_STATE["cooling_until"] = timezone.now() + timedelta(seconds=cooldown)
-            log(f"Blocked (403) x{n}. Cooling down {cooldown}s (user searches still run now)...")
-            # Interruptible cool-down: a user (on-demand) search breaks it so it
-            # is attempted immediately instead of waiting out the cooldown.
-            remaining = cooldown
+            rotations = getattr(settings, "SCRAPER_BLOCK_ROTATIONS", 3)
+            if n <= rotations:
+                # The ban is usually on our session/cookie (a manual browser on
+                # the same IP still works). Rotate to a FRESH profile and retry
+                # soon — this recovers fast when it's not the IP.
+                ok = reset_profile()
+                wait = getattr(settings, "SCRAPER_BLOCK_ROTATE_WAIT", 15) * n
+                WORKER_STATE["block_phase"] = "rotating"
+                log(f"Blocked (403) x{n}. {'Fresh profile' if ok else 'Profile reset FAILED'}"
+                    f" — retrying in {wait}s (user searches still run now)...")
+            else:
+                # Fresh profiles kept getting blocked -> likely IP-level. Back off
+                # exponentially and auto-resume when access returns.
+                wait = min(max_cd, base_cd * (2 ** (n - rotations - 1)))
+                WORKER_STATE["block_phase"] = "ip_cooldown"
+                log(f"Blocked (403) x{n}. Looks IP-level; cooling down {wait}s...")
+            WORKER_STATE["cooling_until"] = timezone.now() + timedelta(seconds=wait)
+            # Interruptible wait: a user (on-demand) search breaks it to run now.
+            remaining = wait
             while remaining > 0 and not stop_event.is_set():
                 if _has_pending_ondemand():
                     break
@@ -204,6 +218,7 @@ def run_loop(
         if WORKER_STATE["consecutive_blocks"]:
             log("Access restored — resuming normal scraping.")
         WORKER_STATE["consecutive_blocks"] = 0
+        WORKER_STATE["block_phase"] = None
 
         # Throttle only for background politeness — NEVER delay a user search:
         # skip the wait if this job was on-demand or another one is waiting.
@@ -275,6 +290,7 @@ class WorkerController:
             "started_at": self._started_at,
             "cooling_down": cooling_until is not None,
             "cooling_until": cooling_until,
+            "block_phase": WORKER_STATE["block_phase"],
             "consecutive_blocks": WORKER_STATE["consecutive_blocks"],
             "queue": {
                 "pending": counts.get(ScrapeJob.Status.PENDING, 0),

@@ -175,9 +175,14 @@ SCRAPER_WORKER_POLL_SECONDS = env.int("SCRAPER_WORKER_POLL_SECONDS", default=5)
 SCRAPER_WORKER_DELAY = env.int("SCRAPER_WORKER_DELAY", default=45)
 # Max attempts per job before marking it failed.
 SCRAPER_JOB_MAX_ATTEMPTS = env.int("SCRAPER_JOB_MAX_ATTEMPTS", default=3)
-# Adaptive backoff: on a DataDome 403 the worker pauses and auto-resumes. First
-# cool-down is SCRAPER_BLOCK_COOLDOWN, doubling per consecutive block up to
-# SCRAPER_BLOCK_COOLDOWN_MAX; it resets once a scrape gets through again.
+# On a DataDome 403 the worker first ROTATES its Chrome profile (fresh session /
+# new datadome cookie) up to this many times — a block is usually on the cookie,
+# not the IP (a manual browser on the same IP still works), so this recovers fast.
+SCRAPER_BLOCK_ROTATIONS = env.int("SCRAPER_BLOCK_ROTATIONS", default=3)
+# Seconds to wait before retrying after a profile rotation (grows per attempt).
+SCRAPER_BLOCK_ROTATE_WAIT = env.int("SCRAPER_BLOCK_ROTATE_WAIT", default=15)
+# If fresh profiles keep getting blocked it's likely IP-level: back off (doubling
+# from SCRAPER_BLOCK_COOLDOWN up to _MAX), auto-resuming when access returns.
 SCRAPER_BLOCK_COOLDOWN = env.int("SCRAPER_BLOCK_COOLDOWN", default=300)
 SCRAPER_BLOCK_COOLDOWN_MAX = env.int("SCRAPER_BLOCK_COOLDOWN_MAX", default=3600)
 

@@ -208,6 +208,29 @@ function setTab(which) {
   document.getElementById("modelBox").style.display = vin ? "none" : "";
 }
 
+// Technical specs decoded from the VIN via NHTSA (present only for VIN lookups).
+function nhtsaSpecs(v){
+  const n = v && v.raw_data && v.raw_data.nhtsa;
+  if(!n) return [];
+  const val = x => { const s=(x==null?"":String(x)).trim(); return (s===""||s==="0") ? "" : s; };
+  const fuel = {Gasoline:"Gasolina", Electric:"Eléctrico", Diesel:"Diésel"};
+  const trans = t => { t=val(t); if(!t) return ""; if(/CVT/i.test(t)) return "CVT"; if(/Automatic/i.test(t)) return "Automática"; if(/Manual/i.test(t)) return "Manual"; return t; };
+  const drive = d => { d=val(d); return d ? d.split("/")[0] : ""; };
+  const r = [];
+  const add = (k,x)=>{ const s=val(x); if(s) r.push([k,s]); };
+  add("Puertas", n.Doors);
+  add("Plazas", n.Seats);
+  if(val(n.EngineHP)) r.push(["Potencia", val(n.EngineHP)+" hp"]);
+  if(val(n.DisplacementL)) r.push(["Cilindrada", val(n.DisplacementL)+" L"]);
+  add("Cilindros", n.EngineCylinders);
+  if(val(n.FuelTypePrimary)) r.push(["Combustible", fuel[val(n.FuelTypePrimary)]||val(n.FuelTypePrimary)]);
+  if(trans(n.TransmissionStyle)) r.push(["Transmisión", trans(n.TransmissionStyle)]);
+  if(drive(n.DriveType)) r.push(["Tracción", drive(n.DriveType)]);
+  if(/yes/i.test(val(n.Turbo))) r.push(["Turbo", "Sí"]);
+  if(val(n.TopSpeedMPH)) r.push(["Vel. máx", val(n.TopSpeedMPH)+" mph"]);
+  return r;
+}
+
 function renderVehicle(v, state) {
   if (!v) return `<div class="muted">Sin datos aún.</div>`;
   const stateBadge = state === "ready"
@@ -232,6 +255,7 @@ function renderVehicle(v, state) {
       ${v.vin ? `<div class="k">VIN</div><div>${v.vin}</div>` : ""}
       ${v.trim ? `<div class="k">Versión</div><div>${v.trim}</div>` : ""}
       ${v.body_class ? `<div class="k">Carrocería</div><div>${v.body_class}</div>` : ""}
+      ${nhtsaSpecs(v).map(s => `<div class="k">${s[0]}</div><div>${s[1]}</div>`).join("")}
       ${v.source_name ? `<div class="k">Fuente</div><div>${v.source_url ? `<a href="${v.source_url}" target="_blank">${v.source_name}</a>` : v.source_name}</div>` : ""}
     </div>`;
 }

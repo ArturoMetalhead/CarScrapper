@@ -175,13 +175,36 @@ function rangeBar(low, high, est){
 
 function specRow(k,v){ return v ? `<div class="spec"><div class="k">${k}</div><div class="v">${v}</div></div>` : ""; }
 
+// Technical specs decoded from the VIN via NHTSA (present only for VIN lookups).
+function nhtsaSpecs(v){
+  const n = v && v.raw_data && v.raw_data.nhtsa;
+  if(!n) return [];
+  const val = x => { const s=(x==null?"":String(x)).trim(); return (s===""||s==="0") ? "" : s; };
+  const fuel = {Gasoline:"Gasolina", Electric:"Eléctrico", Diesel:"Diésel"};
+  const trans = t => { t=val(t); if(!t) return ""; if(/CVT/i.test(t)) return "CVT"; if(/Automatic/i.test(t)) return "Automática"; if(/Manual/i.test(t)) return "Manual"; return t; };
+  const drive = d => { d=val(d); return d ? d.split("/")[0] : ""; };
+  const r = [];
+  const add = (k,x)=>{ const s=val(x); if(s) r.push([k,s]); };
+  add("Puertas", n.Doors);
+  add("Plazas", n.Seats);
+  if(val(n.EngineHP)) r.push(["Potencia", val(n.EngineHP)+" hp"]);
+  if(val(n.DisplacementL)) r.push(["Cilindrada", val(n.DisplacementL)+" L"]);
+  add("Cilindros", n.EngineCylinders);
+  if(val(n.FuelTypePrimary)) r.push(["Combustible", fuel[val(n.FuelTypePrimary)]||val(n.FuelTypePrimary)]);
+  if(trans(n.TransmissionStyle)) r.push(["Transmisión", trans(n.TransmissionStyle)]);
+  if(drive(n.DriveType)) r.push(["Tracción", drive(n.DriveType)]);
+  if(/yes/i.test(val(n.Turbo))) r.push(["Turbo", "Sí"]);
+  if(val(n.TopSpeedMPH)) r.push(["Vel. máx", val(n.TopSpeedMPH)+" mph"]);
+  return r;
+}
+
 function render(v){
   if(!v || v.estimated_price==null){ return error("No hemos podido calcular el valor de este vehículo."); }
   const rows=[];
   if(v.trim) rows.push(["Versión", v.trim]);
   if(v.body_class) rows.push(["Carrocería", v.body_class]);
+  rows.push(...nhtsaSpecs(v));  // engine + body specs from NHTSA (VIN lookups)
   if(v.vin) rows.push(["VIN", v.vin]);
-  if(rows.length) rows.push(["Moneda", v.currency]);  // only when other specs exist
   const specs = rows.length ? `<div class="specs">${rows.map(r=>specRow(r[0],r[1])).join("")}</div>` : "";
   out.innerHTML=`<div class="vcard fade">
     <div class="vhead">

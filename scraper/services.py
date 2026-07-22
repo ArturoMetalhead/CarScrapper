@@ -58,6 +58,18 @@ def _ttl() -> timedelta:
     return timedelta(hours=getattr(settings, "SCRAPER_CACHE_TTL_HOURS", 24))
 
 
+def _set_activity(label: str, source: str, after_block: bool) -> None:
+    """Publish what the worker is scraping right now (for the admin panel)."""
+    try:
+        from .worker import WORKER_STATE
+
+        WORKER_STATE["activity"] = {
+            "label": label, "source": source, "after_block": after_block,
+        }
+    except Exception:  # noqa: BLE001 — telemetry only, never break scraping
+        pass
+
+
 def is_fresh(vehicle_model: VehicleModel | None) -> bool:
     """True if the model data exists and has not exceeded the cache TTL."""
     if not vehicle_model:
@@ -237,7 +249,9 @@ def scrape_model_data(
 
     errors: dict[str, str] = {}
     blocked_any = False
+    label = " ".join(str(x) for x in (year, make, model) if x)
     for source in sources:
+        _set_activity(label, source.name, blocked_any)
         provider = get_provider_class(source.provider_key)(source)
         try:
             result = provider.scrape_model(make, model, year, trim, series=series)

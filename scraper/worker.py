@@ -33,9 +33,12 @@ from .services import (
     scrape_model_data,
 )
 
-# Live worker state (block/cool-down), surfaced in the status endpoint.
+# Live worker state (block/cool-down/activity), surfaced in the status endpoint.
 # block_phase: "rotating" (fresh-session retries) | "ip_cooldown" | None.
-WORKER_STATE = {"cooling_until": None, "consecutive_blocks": 0, "block_phase": None}
+# activity: {label, source, after_block} while scraping, else None.
+WORKER_STATE = {
+    "cooling_until": None, "consecutive_blocks": 0, "block_phase": None, "activity": None,
+}
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +169,7 @@ def run_loop(
     if reclaimed:
         log(f"Reclaimed {reclaimed} orphan job(s) stuck in 'running'.")
     while not stop_event.is_set():
+        WORKER_STATE["activity"] = None  # cleared between jobs; set while scraping
         try:
             job = claim_next_job()
         except Exception:  # noqa: BLE001 — transient DB issues must not kill the loop
@@ -292,6 +296,7 @@ class WorkerController:
             "cooling_until": cooling_until,
             "block_phase": WORKER_STATE["block_phase"],
             "consecutive_blocks": WORKER_STATE["consecutive_blocks"],
+            "activity": WORKER_STATE["activity"],
             "queue": {
                 "pending": counts.get(ScrapeJob.Status.PENDING, 0),
                 "running": counts.get(ScrapeJob.Status.RUNNING, 0),

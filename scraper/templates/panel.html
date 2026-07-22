@@ -232,7 +232,27 @@ function processingBox(label) {
     <div class="muted" style="font-size:13px; margin-top:6px">
       Buscando el precio de <b style="color:var(--tx)">${label || "el vehículo"}</b> ·
       consultando la web, puede tardar unos segundos.</div>
+    <div id="procSource" style="font-size:13px; margin-top:10px; min-height:18px"></div>
   </div>`;
+}
+
+// Live sub-line while processing: which source, and whether Edmunds blocked.
+async function updateProcSource(label) {
+  try {
+    const w = (await api("/worker/")).data;
+    const el = document.getElementById("procSource");
+    if (!el) return;
+    const a = w.activity;
+    if (w.cooling_down) {
+      el.innerHTML = w.block_phase === "rotating"
+        ? `<span style="color:#fbbf24">🔄 Fuente bloqueada — reintentando con sesión nueva…</span>`
+        : `<span style="color:#f87171">⏳ Fuente bloqueada — esperando a que se desbloquee…</span>`;
+    } else if (a && a.label && a.label.toLowerCase() === (label || "").toLowerCase()) {
+      el.innerHTML = a.after_block
+        ? `<span style="color:#fbbf24">⚠️ Edmunds bloqueó — buscando en <b>${a.source}</b>…</span>`
+        : `<span class="muted">Consultando <b style="color:var(--tx)">${a.source}</b>…</span>`;
+    }
+  } catch (e) {}
 }
 
 let pollTimer = null;
@@ -246,10 +266,13 @@ async function lookupVin() {
   if (data.status !== "processing") { box.innerHTML = renderVehicle(data.vehicle, data.status); return; }
   {
     const v0 = data.vehicle || {};
-    box.innerHTML = processingBox([v0.year, v0.make, v0.model].filter(Boolean).join(" ") || vin);
+    const procLabel = [v0.year, v0.make, v0.model].filter(Boolean).join(" ") || vin;
+    box.innerHTML = processingBox(procLabel);
+    updateProcSource(procLabel);
     let tries = 0;
     pollTimer = setInterval(async () => {
       tries++;
+      updateProcSource(procLabel);
       const s = await api(`/vehicles/${vin}/status/`);
       const v = s.data.vehicle, job = s.data.job;
       if (v && v.estimated_price != null) {
@@ -276,10 +299,13 @@ async function lookupModel() {
   const { data } = await api("/models/lookup/", "POST", { make: mk, model: mo, year: yr });
   if (data.status !== "processing") { box.innerHTML = renderVehicle(data.model_data, data.status); return; }
   {
-    box.innerHTML = processingBox([yr, mk, mo].filter(Boolean).join(" "));
+    const procLabel = [yr, mk, mo].filter(Boolean).join(" ");
+    box.innerHTML = processingBox(procLabel);
+    updateProcSource(procLabel);
     let tries = 0;
     pollTimer = setInterval(async () => {
       tries++;
+      updateProcSource(procLabel);
       const { data: d } = await api("/models/lookup/", "POST", { make: mk, model: mo, year: yr });
       if (d.status === "ready") {
         clearInterval(pollTimer);

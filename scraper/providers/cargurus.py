@@ -132,27 +132,37 @@ class CarGurusProvider(NodriverFetchMixin, GenericProvider):
         self, response, make: str, model: str, year=None, trim: str = ""
     ) -> ScrapedVehicle:
         soup = BeautifulSoup(response.text, "lxml")
+
+        # When CarGurus has no listing for the model/year it shows a "0 vehicles
+        # found" page whose "Similar cars for you" block reuses the listing tiles
+        # with UNRELATED cars. Detect that and bail so we never return those
+        # prices (on a page WITH results, the tiles are the real cars).
+        text_low = soup.get_text(" ", strip=True).lower()
+        if (
+            "no cars match your search" in text_low
+            or "no exact matches" in text_low
+            or re.search(r"(?<!\d)0 vehicles found", text_low)
+        ):
+            raise VehicleNotFound(f"CarGurus: no listings for {make} {model} {year}.")
+
         selector = (self.source.selectors or {}).get(
             "model_price_nodes", "[data-testid=srp-tile-price]"
         )
-        # Prefer the actual listing tile prices (precise); if the selector finds
-        # nothing, fall back to scanning the whole page text.
         nodes = soup.select(selector)
-        texts = [n.get_text(" ", strip=True) for n in nodes] if nodes else [
-            soup.get_text(" ", strip=True)
-        ]
         prices: list[Decimal] = []
-        for text in texts:
-            for m in _PRICE_RE.finditer(text):
-                try:
-                    value = Decimal(m.group(1).replace(",", ""))
-                except Exception:  # noqa: BLE001
-                    continue
-                if 3000 <= value <= 200000:  # plausible used-car price
-                    prices.append(value)
+        for node in nodes:
+            m = _PRICE_RE.search(node.get_text(" ", strip=True))
+            if not m:
+                continue
+            try:
+                value = Decimal(m.group(1).replace(",", ""))
+            except Exception:  # noqa: BLE001
+                continue
+            if 3000 <= value <= 200000:  # plausible used-car price
+                prices.append(value)
 
         if not prices:
-            raise VehicleNotFound(f"CarGurus: no prices for {make} {model} {year}.")
+            raise VehicleNotFound(f"CarGurus: no listings for {make} {model} {year}.")
 
         estimated, low, high = EdmundsProvider._robust_listing_stats(prices)
         return ScrapedVehicle(

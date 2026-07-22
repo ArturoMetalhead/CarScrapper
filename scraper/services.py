@@ -236,14 +236,18 @@ def scrape_model_data(
         )
 
     errors: dict[str, str] = {}
+    blocked_any = False
     for source in sources:
         provider = get_provider_class(source.provider_key)(source)
         try:
             result = provider.scrape_model(make, model, year, trim, series=series)
-        except BlockedError:
-            # Anti-bot block: propagate so the worker backs off (don't bury it
-            # as a per-source failure or try other Edmunds URLs).
-            raise
+        except BlockedError as exc:
+            # This source is blocked — record and FALL THROUGH to the next
+            # configured source (e.g. Edmunds blocked -> try CarGurus).
+            blocked_any = True
+            errors[source.name] = f"blocked (403): {exc}"
+            logger.warning("Source '%s' blocked; trying next source.", source.name)
+            continue
         except VehicleNotFound as exc:
             errors[source.name] = str(exc)
             continue
@@ -279,4 +283,8 @@ def scrape_model_data(
         logger.info("Model %s %s %s resolved by '%s'.", year, make, model, source.name)
         return vm
 
+    # No source produced a price. If a source was blocked, signal the worker to
+    # back off / rotate (recover); otherwise it's a genuine not-found.
+    if blocked_any:
+        raise BlockedError(f"All sources blocked or empty for {make} {model} {year}.")
     raise AllSourcesFailed(f"{make} {model} {year}", errors)

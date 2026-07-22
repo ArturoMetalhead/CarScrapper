@@ -186,7 +186,7 @@ function render(v){
       <div class="price">${money(v.estimated_price)}</div>
       ${rangeBar(v.price_low, v.price_high, v.estimated_price)}
       ${specs}
-      <div class="vfoot">Datos de mercado de <a href="${v.source_url||'#'}" target="_blank">Edmunds</a> · decodificación NHTSA</div>
+      <div class="vfoot">Datos de mercado de <a href="${v.source_url||'#'}" target="_blank">${v.source_name || 'la fuente'}</a> · decodificación NHTSA</div>
     </div>
   </div>`;
 }

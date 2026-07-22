@@ -30,20 +30,18 @@ SOURCES = [
         },
     },
     {
-        "slug": "fallback-source",
-        "name": "Fallback source (example)",
-        "base_url": "https://example.com",
-        "vin_path_template": "/vehicle/{vin}",
-        "provider_key": "generic",
-        "priority": 100,
-        "is_active": False,  # disabled until configured
-        "selectors": {
-            "estimated_price": ".estimated-price",
-            "make": ".make",
-            "model": ".model",
-            "year": ".year",
-            "not_found": ".no-results",
-        },
+        "slug": "cargurus",
+        "name": "CarGurus",
+        "base_url": "https://www.cargurus.com",
+        "vin_path_template": "/inventory/vin/{vin}/",
+        # Placeholder (the cargurus provider builds its own URL from the model's
+        # entity id); a non-empty value is required to be eligible for scraping.
+        "model_path_template": "/Cars/l-Used-{make}-{model}/",
+        "provider_key": "cargurus",
+        "priority": 20,  # after Edmunds (10) — used as fallback when it's blocked
+        "is_active": True,
+        # Listing tile prices (SRP). The provider filters the URL by year.
+        "selectors": {"model_price_nodes": "[data-testid=srp-tile-price]"},
     },
 ]
 

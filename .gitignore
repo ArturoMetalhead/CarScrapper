@@ -16,6 +16,7 @@ db.sqlite3-journal
 
 # Perfil de Chrome del scraper (nodriver) — cookies/estado, no versionar
 .chrome_profile_scraper/
+.chrome_profile_cargurus
 
 # IDE / OS
 .vscode/

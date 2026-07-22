@@ -14,6 +14,7 @@ from .registry import get_provider_class, register
 
 # Importing custom providers here registers them on package load.
 from . import edmunds  # noqa: F401  (side effect: registers the provider)
+from . import cargurus  # noqa: F401  (side effect: registers the fallback provider)
 
 __all__ = [
     "BaseProvider",

@@ -192,6 +192,9 @@ class ScrapeJob(models.Model):
     model = models.CharField("Model", max_length=100)
     year = models.PositiveIntegerField("Year", null=True, blank=True)
     trim = models.CharField("Trim", max_length=120, blank=True, default="")
+    # NHTSA "Series" (e.g. BMW "3-Series") — an extra model-slug candidate for
+    # sites (Edmunds) that group by series instead of engine variant.
+    series = models.CharField("Series", max_length=120, blank=True, default="")
 
     # VIN that triggered the job (for the webhook). May come from a prewarm.
     vin = models.CharField("Origin VIN", max_length=17, blank=True, default="", db_index=True)

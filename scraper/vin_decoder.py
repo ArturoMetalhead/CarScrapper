@@ -34,6 +34,7 @@ class DecodedVin:
     model: str = ""
     year: int | None = None
     trim: str = ""
+    series: str = ""
     body_class: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -76,6 +77,7 @@ def decode_vin(vin: str) -> DecodedVin:
         model=(res.get("Model") or "").strip(),
         year=_to_int(res.get("ModelYear")),
         trim=(res.get("Trim") or "").strip(),
+        series=(res.get("Series") or "").strip(),
         body_class=(res.get("BodyClass") or "").strip(),
         raw=res,
     )

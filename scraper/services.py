@@ -26,6 +26,7 @@ from .models import ScrapeJob, ScraperSource, Vehicle, VehicleModel
 from .providers import get_provider_class
 from .providers.base import (
     AllSourcesFailed,
+    BlockedError,
     ScrapedVehicle,
     ScraperError,
     VehicleNotFound,
@@ -97,16 +98,17 @@ def resolve_vin(vin: str, webhook_url: str = "") -> tuple[Vehicle, str]:
     """
     vehicle = Vehicle.objects.select_related("vehicle_model").filter(vin=vin).first()
 
-    # 1) Per-VIN cache with fresh model data.
     if vehicle and is_fresh(vehicle.vehicle_model):
         return vehicle, STATUS_READY
 
-    # 2) Ensure decoded data (reuse it if we already had it).
     if vehicle and vehicle.make and vehicle.model:
         make, model, year, trim = vehicle.make, vehicle.model, vehicle.year, vehicle.trim
+        raw = vehicle.raw_data if isinstance(vehicle.raw_data, dict) else {}
+        series = (raw.get("nhtsa") or {}).get("Series", "")
     else:
         decoded = decode_vin(vin)  # may raise VinDecodeError
         make, model, year, trim = decoded.make, decoded.model, decoded.year, decoded.trim
+        series = decoded.series
         vehicle, _ = Vehicle.objects.update_or_create(
             vin=vin,
             defaults={
@@ -119,14 +121,12 @@ def resolve_vin(vin: str, webhook_url: str = "") -> tuple[Vehicle, str]:
             },
         )
 
-    # 3) Market data by model.
     vm = _find_model(make, model, year)
     if is_fresh(vm):
         _link_model(vehicle, vm)
         return vehicle, STATUS_READY
 
-    # 4) Missing or stale -> enqueue. If a stale one exists, show it meanwhile.
-    enqueue_scrape(make, model, year, trim="", vin=vin, webhook_url=webhook_url)
+    enqueue_scrape(make, model, year, trim="", vin=vin, webhook_url=webhook_url, series=series)
     if vm:
         _link_model(vehicle, vm)
     return vehicle, STATUS_PROCESSING
@@ -163,6 +163,7 @@ def enqueue_scrape(
     webhook_url: str = "",
     priority: int = PRIORITY_ONDEMAND,
     origin: str = "lookup",
+    series: str = "",
 ) -> ScrapeJob:
     """Enqueue a per-model scrape job, avoiding duplicates.
 
@@ -194,7 +195,7 @@ def enqueue_scrape(
 
     return ScrapeJob.objects.create(
         make=make, model=model, year=year, trim=trim, vin=vin,
-        webhook_url=webhook_url, priority=priority, origin=origin,
+        webhook_url=webhook_url, priority=priority, origin=origin, series=series,
     )
 
 
@@ -215,7 +216,7 @@ def apply_model_to_vehicles(vm: VehicleModel) -> int:
 
 
 def scrape_model_data(
-    make: str, model: str, year: int | None = None, trim: str = ""
+    make: str, model: str, year: int | None = None, trim: str = "", series: str = ""
 ) -> VehicleModel:
     """Scrape a model's market data trying the sources by priority.
 
@@ -238,7 +239,11 @@ def scrape_model_data(
     for source in sources:
         provider = get_provider_class(source.provider_key)(source)
         try:
-            result = provider.scrape_model(make, model, year, trim)
+            result = provider.scrape_model(make, model, year, trim, series=series)
+        except BlockedError:
+            # Anti-bot block: propagate so the worker backs off (don't bury it
+            # as a per-source failure or try other Edmunds URLs).
+            raise
         except VehicleNotFound as exc:
             errors[source.name] = str(exc)
             continue

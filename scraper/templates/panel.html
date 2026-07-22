@@ -1,0 +1,337 @@
+{% load static %}<!-- CarScrapper demo dashboard: talks to the local API (same origin). -->
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CarScrapper — Admin</title>
+  <style>
+    :root {
+      --bg:#0f172a; --card:#1e293b; --card2:#172033; --line:#334155;
+      --tx:#e2e8f0; --mut:#94a3b8; --acc:#38bdf8; --ok:#34d399;
+      --warn:#fbbf24; --bad:#f87171; --crawl:#a78bfa;
+    }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--tx);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+    a { color:var(--acc); }
+    .wrap { max-width:1180px; margin:0 auto; padding:20px; }
+    header { display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+      padding-bottom:16px; border-bottom:1px solid var(--line); margin-bottom:20px; }
+    header h1 { font-size:20px; margin:0; letter-spacing:.5px; }
+    header h1 .dot { color:var(--acc); }
+    .pills { margin-left:auto; display:flex; gap:10px; flex-wrap:wrap; }
+    .pill { display:flex; align-items:center; gap:8px; background:var(--card);
+      border:1px solid var(--line); border-radius:999px; padding:6px 12px;
+      font-size:13px; cursor:pointer; user-select:none; }
+    .pill:hover { border-color:var(--acc); }
+    .led { width:9px; height:9px; border-radius:50%; background:#64748b; }
+    .led.on { background:var(--ok); box-shadow:0 0 8px var(--ok); }
+    .led.crawl.on { background:var(--crawl); box-shadow:0 0 8px var(--crawl); }
+    .grid { display:grid; grid-template-columns:1.3fr 1fr; gap:20px; }
+    @media (max-width:900px){ .grid{ grid-template-columns:1fr; } }
+    .card { background:var(--card); border:1px solid var(--line);
+      border-radius:14px; padding:18px; margin-bottom:20px; }
+    .card h2 { font-size:14px; text-transform:uppercase; letter-spacing:1px;
+      color:var(--mut); margin:0 0 14px; }
+    .tabs { display:flex; gap:8px; margin-bottom:14px; }
+    .tab { padding:7px 14px; border-radius:9px; background:var(--card2);
+      border:1px solid var(--line); cursor:pointer; font-size:14px; color:var(--mut); }
+    .tab.active { color:var(--tx); border-color:var(--acc); background:#0b3b52; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; }
+    input { background:var(--card2); border:1px solid var(--line); color:var(--tx);
+      border-radius:9px; padding:11px 12px; font-size:15px; outline:none; }
+    input:focus { border-color:var(--acc); }
+    .grow { flex:1; min-width:120px; }
+    button.go { background:var(--acc); color:#04222f; border:none; font-weight:700;
+      border-radius:9px; padding:0 20px; cursor:pointer; font-size:15px; }
+    button.go:hover { filter:brightness(1.08); }
+    .hint { color:var(--mut); font-size:12.5px; margin-top:8px; }
+    .result { margin-top:16px; }
+    .result .head { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
+    .result .title { font-size:20px; font-weight:700; }
+    .price { font-size:40px; font-weight:800; color:var(--ok); font-variant-numeric:tabular-nums; }
+    .range { color:var(--mut); font-size:14px; margin-top:2px; }
+    .badge { font-size:11px; padding:3px 9px; border-radius:999px;
+      border:1px solid var(--line); color:var(--mut); }
+    .badge.ready { color:var(--ok); border-color:var(--ok); }
+    .badge.proc { color:var(--warn); border-color:var(--warn); }
+    .badge.kind { color:var(--acc); border-color:var(--acc); }
+    .meta { margin-top:12px; display:grid; grid-template-columns:auto 1fr; gap:4px 16px;
+      font-size:14px; }
+    .meta .k { color:var(--mut); }
+    .tiles { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
+    .tile { background:var(--card2); border:1px solid var(--line); border-radius:11px;
+      padding:12px; text-align:center; }
+    .tile .n { font-size:26px; font-weight:800; font-variant-numeric:tabular-nums; }
+    .tile .l { font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:var(--mut); }
+    .n.pending{color:var(--warn);} .n.running{color:var(--acc);}
+    .n.done{color:var(--ok);} .n.failed{color:var(--bad);}
+    .orig { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; font-size:12.5px; }
+    .chip { background:var(--card2); border:1px solid var(--line); border-radius:8px; padding:5px 9px; }
+    table { width:100%; border-collapse:collapse; font-size:13.5px; }
+    th,td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); }
+    th { color:var(--mut); font-weight:600; font-size:12px; text-transform:uppercase; }
+    td.num { text-align:right; font-variant-numeric:tabular-nums; color:var(--ok); }
+    .muted { color:var(--mut); }
+    .flow { font-size:12.5px; color:var(--mut); line-height:1.7; }
+    .flow b { color:var(--tx); }
+    .spin { display:inline-block; width:14px; height:14px; border:2px solid var(--line);
+      border-top-color:var(--acc); border-radius:50%; animation:sp 0.8s linear infinite; vertical-align:-2px; }
+    @keyframes sp { to { transform:rotate(360deg); } }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Car<span class="dot">Scrapper</span> · Admin</h1>
+    <div class="pills">
+      <div class="pill" id="workerPill" title="Clic para arrancar/parar">
+        <span class="led" id="workerLed"></span> Worker: <b id="workerTxt">…</b>
+      </div>
+      <div class="pill" id="crawlerPill" title="Clic para arrancar/parar">
+        <span class="led crawl" id="crawlerLed"></span> Crawler: <b id="crawlerTxt">…</b>
+      </div>
+    </div>
+  </header>
+
+  <div id="alert" style="display:none; margin-bottom:20px; padding:14px 18px; border-radius:12px;
+    background:rgba(248,113,113,.14); border:1px solid rgba(248,113,113,.6); color:#fecaca;
+    font-size:14.5px; line-height:1.5;">
+    <span style="font-size:18px">⚠️</span> <span id="alertTxt"></span>
+  </div>
+
+  <div class="grid">
+    <!-- LEFT: search + result -->
+    <div>
+      <div class="card">
+        <h2>Buscar vehículo</h2>
+        <div class="tabs">
+          <div class="tab active" id="tabVin" onclick="setTab('vin')">Por VIN</div>
+          <div class="tab" id="tabModel" onclick="setTab('model')">Por modelo</div>
+        </div>
+
+        <div id="vinBox">
+          <div class="row">
+            <input class="grow" id="vin" placeholder="VIN (17 caracteres)" maxlength="17"
+                   value="1HGCV1F13KA000000">
+            <button class="go" onclick="lookupVin()">Buscar</button>
+          </div>
+          <div class="hint">Decodifica el VIN con NHTSA y busca el precio de mercado del modelo.</div>
+        </div>
+
+        <div id="modelBox" style="display:none">
+          <div class="row">
+            <input class="grow" id="mk" placeholder="Marca" value="Mazda">
+            <input class="grow" id="mo" placeholder="Modelo" value="CX-5">
+            <input id="yr" placeholder="Año" value="2026" style="width:90px">
+            <button class="go" onclick="lookupModel()">Buscar</button>
+          </div>
+          <div class="hint">Busca directamente por modelo (ideal para coches nuevos).</div>
+        </div>
+
+        <div class="result" id="result"></div>
+      </div>
+
+      <div class="card">
+        <h2>Cómo funciona</h2>
+        <div class="flow">
+          1. <b>Buscas</b> un VIN → se decodifica con <b>NHTSA</b> (gratis).<br>
+          2. Si el precio del modelo está <b>en caché</b> → respuesta al instante.<br>
+          3. Si no → se <b>encola</b> y el <b>worker</b> lo scrapea de Edmunds (Chrome oculto, evade DataDome) y avisa por <b>webhook</b>.<br>
+          4. El <b>crawler</b> descubre y refresca modelos en segundo plano; las búsquedas de usuarios siempre pasan delante.
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: live status -->
+    <div>
+      <div class="card">
+        <h2>Worker · cola en vivo</h2>
+        <div class="tiles">
+          <div class="tile"><div class="n pending" id="qp">0</div><div class="l">Pendientes</div></div>
+          <div class="tile"><div class="n running" id="qr">0</div><div class="l">En curso</div></div>
+          <div class="tile"><div class="n done" id="qd">0</div><div class="l">Hechos</div></div>
+          <div class="tile"><div class="n failed" id="qf">0</div><div class="l">Fallidos</div></div>
+        </div>
+        <div id="cooling" style="display:none; margin-top:12px; padding:10px 12px;
+          border-radius:10px; background:rgba(251,191,36,.12);
+          border:1px solid rgba(251,191,36,.5); color:#fde68a; font-size:13.5px;"></div>
+      </div>
+
+      <div class="card">
+        <h2>Crawler · descubrimiento</h2>
+        <div class="row" style="justify-content:space-between">
+          <div><div class="muted" style="font-size:12px">Modelos descubiertos</div>
+            <div style="font-size:24px;font-weight:800" id="frontier">0</div></div>
+          <div><div class="muted" style="font-size:12px">Últ. sembrados / refrescados</div>
+            <div style="font-size:24px;font-weight:800" id="seeded">0 / 0</div></div>
+        </div>
+        <div class="orig" id="byOrigin"></div>
+      </div>
+
+      <div class="card">
+        <h2>Últimos resueltos</h2>
+        <table>
+          <thead><tr><th>Vehículo</th><th>Tipo</th><th style="text-align:right">Precio</th></tr></thead>
+          <tbody id="recent"><tr><td colspan="3" class="muted">—</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const CSRF = "{{ csrf_token }}";
+const fmt = n => (n == null || n === "") ? "—" : "$" + Math.round(Number(n)).toLocaleString("en-US");
+
+async function api(path, method="GET", body=null) {
+  const opt = { method, headers: {} };
+  if (body) { opt.headers["Content-Type"] = "application/json"; opt.headers["X-CSRFToken"] = CSRF; opt.body = JSON.stringify(body); }
+  const r = await fetch("/api" + path, opt);
+  let data = null; try { data = await r.json(); } catch(e) {}
+  return { status: r.status, data };
+}
+
+function setTab(which) {
+  const vin = which === "vin";
+  document.getElementById("tabVin").classList.toggle("active", vin);
+  document.getElementById("tabModel").classList.toggle("active", !vin);
+  document.getElementById("vinBox").style.display = vin ? "" : "none";
+  document.getElementById("modelBox").style.display = vin ? "none" : "";
+}
+
+function renderVehicle(v, state) {
+  if (!v) return `<div class="muted">Sin datos aún.</div>`;
+  const stateBadge = state === "ready"
+    ? `<span class="badge ready">listo</span>`
+    : `<span class="badge proc"><span class="spin"></span> procesando</span>`;
+  const kind = v.price_kind ? `<span class="badge kind">${v.price_kind}</span>` : "";
+  const range = (v.price_low || v.price_high)
+    ? `Rango ${fmt(v.price_low)} – ${fmt(v.price_high)}` : "";
+  return `
+    <div class="head">
+      <span class="title">${[v.year, v.make, v.model].filter(Boolean).join(" ")}</span>
+      ${stateBadge} ${kind}
+    </div>
+    <div class="price">${fmt(v.estimated_price)}</div>
+    <div class="range">${range}</div>
+    <div class="meta">
+      ${v.vin ? `<div class="k">VIN</div><div>${v.vin}</div>` : ""}
+      ${v.trim ? `<div class="k">Versión</div><div>${v.trim}</div>` : ""}
+      ${v.body_class ? `<div class="k">Carrocería</div><div>${v.body_class}</div>` : ""}
+      ${v.source_name ? `<div class="k">Fuente</div><div>${v.source_url ? `<a href="${v.source_url}" target="_blank">${v.source_name}</a>` : v.source_name}</div>` : ""}
+    </div>`;
+}
+
+let pollTimer = null;
+async function lookupVin() {
+  clearInterval(pollTimer);
+  const vin = document.getElementById("vin").value.trim().toUpperCase();
+  const box = document.getElementById("result");
+  box.innerHTML = `<div class="muted"><span class="spin"></span> Buscando…</div>`;
+  const { status, data } = await api("/vehicles/lookup/", "POST", { vin });
+  if (status === 400) { box.innerHTML = `<div class="badge proc">${data.detail || "VIN inválido"}</div>`; return; }
+  box.innerHTML = renderVehicle(data.vehicle, data.status);
+  if (data.status === "processing") {
+    pollTimer = setInterval(async () => {
+      const s = await api(`/vehicles/${vin}/status/`);
+      const v = s.data.vehicle;
+      if (v && v.estimated_price != null) {
+        clearInterval(pollTimer);
+        box.innerHTML = renderVehicle(v, "ready");
+        loadRecent();
+      }
+    }, 3000);
+  }
+}
+
+async function lookupModel() {
+  const mk = document.getElementById("mk").value.trim();
+  const mo = document.getElementById("mo").value.trim();
+  const yr = parseInt(document.getElementById("yr").value) || null;
+  const box = document.getElementById("result");
+  box.innerHTML = `<div class="muted"><span class="spin"></span> Buscando…</div>`;
+  const { data } = await api("/models/lookup/", "POST", { make: mk, model: mo, year: yr });
+  box.innerHTML = renderVehicle(data.model_data, data.status);
+}
+
+async function refreshStatus() {
+  try {
+    const w = (await api("/worker/")).data;
+    const led = document.getElementById("workerLed");
+    const cool = document.getElementById("cooling");
+    const alertEl = document.getElementById("alert");
+    if (w.cooling_down) {
+      const until = w.cooling_until ? new Date(w.cooling_until) : null;
+      const secs = until ? Math.max(0, Math.round((until - new Date()) / 1000)) : null;
+      const eta = secs != null ? "~" + secs + "s" : "—";
+      document.getElementById("workerTxt").textContent = "enfriándose";
+      led.classList.remove("on");
+      led.style.background = "#fbbf24"; led.style.boxShadow = "0 0 8px #fbbf24";
+      cool.style.display = "block";
+      cool.innerHTML = `⏳ <b>Enfriándose tras bloqueo (403)</b> · ${w.consecutive_blocks} bloqueo(s) seguidos · reanuda en ${eta}`;
+      alertEl.style.display = "block";
+      document.getElementById("alertTxt").innerHTML =
+        `<b>Cuenta/IP temporalmente bloqueada por DataDome (403).</b> El scraping se pausó automáticamente ` +
+        `(${w.consecutive_blocks} bloqueo(s) seguidos) y se reanudará solo en ${eta}. No hace falta hacer nada; ` +
+        `si se repite mucho, sube <code>SCRAPER_WORKER_DELAY</code> para bajar el ritmo.`;
+    } else {
+      led.style.background = ""; led.style.boxShadow = "";
+      led.classList.toggle("on", w.running);
+      document.getElementById("workerTxt").textContent = w.running ? "activo" : "parado";
+      cool.style.display = "none";
+      alertEl.style.display = "none";
+    }
+    document.getElementById("qp").textContent = w.queue.pending;
+    document.getElementById("qr").textContent = w.queue.running;
+    document.getElementById("qd").textContent = w.queue.done;
+    document.getElementById("qf").textContent = w.queue.failed;
+
+    const c = (await api("/crawler/")).data;
+    document.getElementById("crawlerLed").classList.toggle("on", c.running);
+    const phaseTxt = { discovering: "descubriendo…", seeding: "encolando…", idle: "activo" };
+    document.getElementById("crawlerTxt").textContent =
+      c.running ? (phaseTxt[c.phase] || "activo") : "parado";
+    document.getElementById("frontier").textContent = c.frontier_size;
+    document.getElementById("seeded").textContent = `${c.last_seeded} / ${c.last_refreshed}`;
+    const by = c.pending_by_origin || {};
+    document.getElementById("byOrigin").innerHTML =
+      Object.keys(by).length
+        ? Object.entries(by).map(([k, v]) => `<span class="chip">${k}: <b>${v}</b></span>`).join("")
+        : `<span class="muted">cola vacía</span>`;
+  } catch (e) {}
+}
+
+async function loadRecent() {
+  try {
+    const { data } = await api("/vehicles/");
+    const rows = (Array.isArray(data) ? data : []).slice(0, 10);
+    document.getElementById("recent").innerHTML = rows.length
+      ? rows.map(v => `<tr>
+          <td>${[v.year, v.make, v.model].filter(Boolean).join(" ")}<br>
+              <span class="muted" style="font-size:11px">${v.vin || ""}</span></td>
+          <td class="muted">${v.price_kind || "—"}</td>
+          <td class="num">${fmt(v.estimated_price)}</td></tr>`).join("")
+      : `<tr><td colspan="3" class="muted">Aún no hay vehículos.</td></tr>`;
+  } catch (e) {}
+}
+
+document.getElementById("workerPill").onclick = async () => {
+  const w = (await api("/worker/")).data;
+  await api(`/worker/${w.running ? "stop" : "start"}/`, "POST", {});
+  refreshStatus();
+};
+document.getElementById("crawlerPill").onclick = async () => {
+  const c = (await api("/crawler/")).data;
+  await api(`/crawler/${c.running ? "stop" : "start"}/`, "POST", {});
+  refreshStatus();
+};
+document.getElementById("vin").addEventListener("keydown", e => { if (e.key === "Enter") lookupVin(); });
+
+refreshStatus(); loadRecent();
+setInterval(refreshStatus, 3000);
+setInterval(loadRecent, 8000);
+</script>
+</body>
+</html>

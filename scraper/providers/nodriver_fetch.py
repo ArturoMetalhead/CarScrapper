@@ -28,7 +28,7 @@ import os
 
 from django.conf import settings
 
-from .base import ScraperError, VehicleNotFound
+from .base import BlockedError, ScraperError, VehicleNotFound
 from .playwright_fetch import RenderedResponse
 
 # DataDome / block-wall markers, in the HTML or the title.
@@ -73,14 +73,16 @@ class NodriverFetchMixin:
 
         if response.status_code == 404:
             raise VehicleNotFound(f"{self.source.name} has no data for {context}.")
+        if response.status_code == 403:
+            raise BlockedError(
+                f"{self.source.name} blocked the request (403) for {context}."
+            )
         if not response.ok:
             raise ScraperError(
-                f"{self.source.name} responded status {response.status_code} "
-                f"(possible anti-bot block)."
+                f"{self.source.name} responded status {response.status_code}."
             )
         return response
 
-    # --- Config (with sensible defaults) ---------------------------------
     @property
     def _profile_dir(self) -> str:
         path = getattr(settings, "SCRAPER_NODRIVER_PROFILE_DIR", "") or os.path.join(
@@ -111,7 +113,6 @@ class NodriverFetchMixin:
     def _settle(self) -> int:
         return max(1, getattr(settings, "SCRAPER_NODRIVER_SETTLE", 6))
 
-    # --- Render ----------------------------------------------------------
     def _render(self, url: str, wait_selector: str | None = None) -> RenderedResponse:
         try:
             import nodriver  # noqa: F401

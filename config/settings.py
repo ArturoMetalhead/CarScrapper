@@ -10,7 +10,6 @@ import environ
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# --- Environment variables ------------------------------------------------
 env = environ.Env(
     DEBUG=(bool, False),
     ALLOWED_HOSTS=(list, ["127.0.0.1", "localhost"]),
@@ -24,7 +23,6 @@ SECRET_KEY = env("SECRET_KEY", default="dev-insecure-change-me")
 DEBUG = env("DEBUG")
 ALLOWED_HOSTS = env("ALLOWED_HOSTS")
 
-# --- Applications ---------------------------------------------------------
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -71,7 +69,6 @@ TEMPLATES = [
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
-# --- Database -------------------------------------------------------------
 # SQLite by default for development. Switch to Postgres in production.
 DATABASES = {
     "default": env.db(
@@ -80,7 +77,6 @@ DATABASES = {
     )
 }
 
-# --- Password validation --------------------------------------------------
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
@@ -88,19 +84,16 @@ AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
 
-# --- Internationalization -------------------------------------------------
 LANGUAGE_CODE = "es"
 TIME_ZONE = "UTC"
 USE_I18N = True
 USE_TZ = True
 
-# --- Static files ---------------------------------------------------------
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# --- Django REST Framework ------------------------------------------------
 REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
@@ -118,7 +111,6 @@ REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 
-# --- OpenAPI / Swagger (drf-spectacular) ----------------------------------
 SPECTACULAR_SETTINGS = {
     "TITLE": "CarScrapper API",
     "DESCRIPTION": "VIN lookup with background scraping, cache and webhook notifications.",
@@ -126,10 +118,8 @@ SPECTACULAR_SETTINGS = {
     "SERVE_INCLUDE_SCHEMA": False,
 }
 
-# --- CORS -----------------------------------------------------------------
 CORS_ALLOWED_ORIGINS = env("CORS_ALLOWED_ORIGINS")
 
-# --- Scraper configuration ------------------------------------------------
 # Base URL of the site to scrape and the User-Agent to use.
 SCRAPER_BASE_URL = env("SCRAPER_BASE_URL", default="")
 SCRAPER_USER_AGENT = env(
@@ -146,7 +136,6 @@ SCRAPER_USE_STEALTH = env.bool("SCRAPER_USE_STEALTH", default=True)
 # Format: http://user:password@host:port  (or without credentials).
 SCRAPER_PROXY = env("SCRAPER_PROXY", default="")
 
-# --- nodriver (anti-DataDome) ---------------------------------------------
 # The Edmunds provider (and the generic 'nodriver' one) use a real Chrome via
 # nodriver to get past DataDome, which blocks Playwright/Selenium.
 # Persistent profile: accumulates the `datadome` cookie and IP "trust" so in
@@ -170,7 +159,6 @@ SCRAPER_NODRIVER_RETRIES = env.int("SCRAPER_NODRIVER_RETRIES", default=3)
 # Seconds to wait after navigating, so the JS challenge settles.
 SCRAPER_NODRIVER_SETTLE = env.int("SCRAPER_NODRIVER_SETTLE", default=6)
 
-# --- VIN lookup, cache and background queue -------------------------------
 # Timeout for NHTSA VIN decoding.
 SCRAPER_VIN_DECODE_TIMEOUT = env.int("SCRAPER_VIN_DECODE_TIMEOUT", default=15)
 # Hours a market data row (VehicleModel) is considered fresh before requeueing
@@ -181,12 +169,21 @@ SCRAPER_CACHE_TTL_HOURS = env.int("SCRAPER_CACHE_TTL_HOURS", default=24)
 SCRAPER_WORKER_AUTOSTART = env.bool("SCRAPER_WORKER_AUTOSTART", default=True)
 # Worker: seconds between polls when the queue is empty.
 SCRAPER_WORKER_POLL_SECONDS = env.int("SCRAPER_WORKER_POLL_SECONDS", default=5)
+# Seconds to wait AFTER each scrape (with jitter). A single residential IP only
+# survives LOW volume against DataDome; back-to-back scraping gets it flagged
+# (403). Higher = safer/slower. 0 = no throttle (only for a single lookup).
+SCRAPER_WORKER_DELAY = env.int("SCRAPER_WORKER_DELAY", default=45)
 # Max attempts per job before marking it failed.
 SCRAPER_JOB_MAX_ATTEMPTS = env.int("SCRAPER_JOB_MAX_ATTEMPTS", default=3)
+# Adaptive backoff: on a DataDome 403 the worker pauses and auto-resumes. First
+# cool-down is SCRAPER_BLOCK_COOLDOWN, doubling per consecutive block up to
+# SCRAPER_BLOCK_COOLDOWN_MAX; it resets once a scrape gets through again.
+SCRAPER_BLOCK_COOLDOWN = env.int("SCRAPER_BLOCK_COOLDOWN", default=300)
+SCRAPER_BLOCK_COOLDOWN_MAX = env.int("SCRAPER_BLOCK_COOLDOWN_MAX", default=3600)
 
-# --- Background crawler ---------------------------------------------------
-# Proactively discover models (via NHTSA), scrape and keep them fresh, on top of
-# on-demand lookups. Crawl jobs run at low priority so user lookups jump ahead.
+# Proactively discover models (via NHTSA), scrape and keep them fresh. The worker
+# self-regulates: if DataDome starts blocking (403), it cools down and resumes
+# automatically when unblocked. Keep the volume gentle via SCRAPER_WORKER_DELAY.
 SCRAPER_CRAWL_ENABLED = env.bool("SCRAPER_CRAWL_ENABLED", default=True)
 # Makes to crawl (empty -> the mainstream default list in crawler.MAINSTREAM_MAKES).
 SCRAPER_CRAWL_MAKES = env.list("SCRAPER_CRAWL_MAKES", default=[])
@@ -201,7 +198,6 @@ SCRAPER_CRAWL_BATCH = env.int("SCRAPER_CRAWL_BATCH", default=50)
 # How long the discovered model frontier is cached before re-discovering.
 SCRAPER_CRAWL_DISCOVERY_TTL_HOURS = env.int("SCRAPER_CRAWL_DISCOVERY_TTL_HOURS", default=24)
 
-# --- Frontend notification webhook ----------------------------------------
 # URL POSTed to when a background scrape finishes. Can be overridden per request
 # (webhook_url field) or per job.
 SCRAPER_WEBHOOK_URL = env("SCRAPER_WEBHOOK_URL", default="")

@@ -1,0 +1,243 @@
+{% load static %}<!-- Customer-facing vehicle valuation page. Calls the API on the same origin. -->
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Valora tu coche · CarScrapper</title>
+  <style>
+    :root{
+      --bg1:#0b1220; --bg2:#131f38; --glass:rgba(255,255,255,.04);
+      --line:rgba(255,255,255,.10); --tx:#eef2f8; --mut:#93a1b8;
+      --acc:#38bdf8; --acc2:#818cf8; --ok:#34d399;
+    }
+    *{box-sizing:border-box;}
+    html,body{height:100%;}
+    body{margin:0; color:var(--tx);
+      font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+      background:
+        radial-gradient(1100px 600px at 15% -5%, rgba(56,189,248,.16), transparent 60%),
+        radial-gradient(900px 600px at 100% 10%, rgba(129,140,248,.18), transparent 55%),
+        linear-gradient(180deg,var(--bg1),var(--bg2));
+      min-height:100%;}
+    .brand{position:absolute; top:22px; left:26px; font-weight:800; letter-spacing:.5px; font-size:17px;}
+    .brand span{color:var(--acc);}
+    .wrap{max-width:760px; margin:0 auto; padding:96px 20px 60px;}
+    .hero{text-align:center; margin-bottom:30px;}
+    .hero h1{font-size:38px; line-height:1.15; margin:0 0 12px; font-weight:800;
+      background:linear-gradient(90deg,#fff,#b9d9ff); -webkit-background-clip:text; background-clip:text; color:transparent;}
+    .hero p{color:var(--mut); font-size:16px; margin:0;}
+    .search{background:var(--glass); border:1px solid var(--line); border-radius:20px;
+      padding:22px; backdrop-filter:blur(10px); box-shadow:0 20px 60px rgba(0,0,0,.35);}
+    .seg{display:flex; gap:6px; background:rgba(0,0,0,.25); border:1px solid var(--line);
+      border-radius:12px; padding:5px; width:fit-content; margin:0 auto 18px;}
+    .seg button{border:none; background:transparent; color:var(--mut); font-size:14px;
+      padding:8px 20px; border-radius:9px; cursor:pointer; font-weight:600;}
+    .seg button.on{background:linear-gradient(90deg,var(--acc),var(--acc2)); color:#06121f;}
+    .row{display:flex; gap:10px;}
+    @media(max-width:560px){ .row{flex-wrap:wrap;} }
+    input{flex:1; min-width:0; background:rgba(0,0,0,.28); border:1px solid var(--line);
+      color:var(--tx); border-radius:12px; padding:15px 16px; font-size:16px; outline:none;}
+    input::placeholder{color:#5f7089;}
+    input:focus{border-color:var(--acc); box-shadow:0 0 0 3px rgba(56,189,248,.15);}
+    .btn{border:none; border-radius:12px; padding:0 26px; font-size:16px; font-weight:800;
+      cursor:pointer; color:#06121f; background:linear-gradient(90deg,var(--acc),var(--acc2));
+      white-space:nowrap;}
+    .btn:hover{filter:brightness(1.07);}
+    .btn:disabled{opacity:.6; cursor:default;}
+    .hint{color:var(--mut); font-size:12.5px; text-align:center; margin-top:12px;}
+    /* result */
+    #out{margin-top:26px;}
+    .fade{animation:fade .45s ease both;}
+    @keyframes fade{from{opacity:0; transform:translateY(10px);} to{opacity:1; transform:none;}}
+    .state{text-align:center; padding:34px 20px; color:var(--mut);}
+    .spin{width:34px; height:34px; border:3px solid var(--line); border-top-color:var(--acc);
+      border-radius:50%; animation:sp 0.8s linear infinite; margin:0 auto 16px;}
+    @keyframes sp{to{transform:rotate(360deg);}}
+    .err{background:rgba(248,113,113,.12); border:1px solid rgba(248,113,113,.4);
+      color:#fecaca; border-radius:12px; padding:14px 16px; text-align:center;}
+    .vcard{background:var(--glass); border:1px solid var(--line); border-radius:20px;
+      overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,.35);}
+    .vhead{padding:22px 24px; display:flex; align-items:center; justify-content:space-between;
+      gap:12px; border-bottom:1px solid var(--line);
+      background:linear-gradient(90deg,rgba(56,189,248,.10),rgba(129,140,248,.10));}
+    .vhead .name{font-size:22px; font-weight:800;}
+    .vhead .sub{color:var(--mut); font-size:13px; margin-top:2px;}
+    .cond{font-size:12px; font-weight:700; padding:6px 12px; border-radius:999px;
+      border:1px solid var(--line); white-space:nowrap;}
+    .cond.nuevo{color:var(--acc); border-color:rgba(56,189,248,.5); background:rgba(56,189,248,.08);}
+    .cond.usado{color:var(--ok); border-color:rgba(52,211,153,.5); background:rgba(52,211,153,.08);}
+    .vbody{padding:24px;}
+    .plabel{color:var(--mut); font-size:13px; text-transform:uppercase; letter-spacing:1px;}
+    .price{font-size:52px; font-weight:900; letter-spacing:-1px; margin:4px 0 2px;
+      font-variant-numeric:tabular-nums;
+      background:linear-gradient(90deg,#a7f3d0,#34d399); -webkit-background-clip:text; background-clip:text; color:transparent;}
+    .rangewrap{margin:20px 0 6px;}
+    .rtrack{position:relative; height:8px; border-radius:999px;
+      background:linear-gradient(90deg,rgba(56,189,248,.25),rgba(129,140,248,.25),rgba(52,211,153,.35));}
+    .rmark{position:absolute; top:-4px; width:16px; height:16px; border-radius:50%;
+      background:#fff; border:3px solid var(--ok); transform:translateX(-50%);
+      box-shadow:0 2px 8px rgba(0,0,0,.4);}
+    .rends{display:flex; justify-content:space-between; color:var(--mut); font-size:13px; margin-top:8px;}
+    .specs{display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:1px;
+      background:var(--line); border:1px solid var(--line); border-radius:14px; overflow:hidden; margin-top:22px;}
+    .spec{background:var(--bg2); padding:14px 16px;}
+    .spec .k{color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.5px;}
+    .spec .v{font-size:15.5px; margin-top:3px; word-break:break-word;}
+    .vfoot{color:var(--mut); font-size:12.5px; text-align:center; margin-top:18px;}
+    .vfoot a{color:var(--acc); text-decoration:none;}
+  </style>
+</head>
+<body>
+  <div class="brand">Car<span>Scrapper</span></div>
+  <div class="wrap">
+    <div class="hero">
+      <h1>Descubre el valor de tu coche</h1>
+      <p>Introduce el VIN o el modelo y te decimos su precio de mercado al instante.</p>
+    </div>
+
+    <div class="search">
+      <div class="seg">
+        <button class="on" id="segVin" onclick="setMode('vin')">Por VIN</button>
+        <button id="segModel" onclick="setMode('model')">Por modelo</button>
+      </div>
+
+      <div id="vinBox" class="row">
+        <input id="vin" placeholder="Nº de bastidor (VIN, 17 caracteres)" maxlength="17"
+               value="1HGCV1F13KA000000" autocomplete="off">
+        <button class="btn" onclick="lookupVin()">Valorar</button>
+      </div>
+
+      <div id="modelBox" class="row" style="display:none">
+        <input id="mk" placeholder="Marca" value="Mazda" autocomplete="off">
+        <input id="mo" placeholder="Modelo" value="CX-5" autocomplete="off">
+        <input id="yr" placeholder="Año" value="2026" style="flex:0 0 90px" autocomplete="off">
+        <button class="btn" onclick="lookupModel()">Valorar</button>
+      </div>
+
+      <div class="hint">Cálculo basado en datos de mercado reales · sin registro</div>
+    </div>
+
+    <div id="out"></div>
+  </div>
+
+<script>
+const CSRF="{{ csrf_token }}";
+const money = n => (n==null||n==="") ? "—" : "$"+Math.round(Number(n)).toLocaleString("en-US");
+const out = document.getElementById("out");
+
+async function api(path, method="GET", body=null){
+  const opt={method, headers:{}};
+  if(body){opt.headers["Content-Type"]="application/json"; opt.headers["X-CSRFToken"]=CSRF; opt.body=JSON.stringify(body);}
+  const r=await fetch("/api"+path, opt);
+  let d=null; try{ d=await r.json(); }catch(e){}
+  return {status:r.status, data:d};
+}
+
+function setMode(m){
+  const vin=m==="vin";
+  segVin.classList.toggle("on",vin); segModel.classList.toggle("on",!vin);
+  vinBox.style.display=vin?"flex":"none"; modelBox.style.display=vin?"none":"flex";
+  out.innerHTML="";
+}
+
+function loading(msg){
+  out.innerHTML=`<div class="state fade"><div class="spin"></div>${msg}</div>`;
+}
+function error(msg){ out.innerHTML=`<div class="err fade">${msg}</div>`; }
+
+function condition(kind){
+  if(kind==="used_listings_median") return {cls:"usado", label:"Usado", plabel:"Valor de mercado estimado"};
+  if(kind==="edmunds_suggested"||kind==="msrp_range_mid") return {cls:"nuevo", label:"Nuevo", plabel:"Precio sugerido (MSRP)"};
+  return {cls:"nuevo", label:"", plabel:"Precio estimado"};
+}
+
+function rangeBar(low, high, est){
+  if(low==null||high==null||Number(high)<=Number(low)) return "";
+  let pct = (Number(est)-Number(low))/(Number(high)-Number(low))*100;
+  pct = Math.max(2, Math.min(98, pct));
+  return `<div class="rangewrap">
+      <div class="rtrack"><div class="rmark" style="left:${pct}%"></div></div>
+      <div class="rends"><span>${money(low)}</span><span>${money(high)}</span></div>
+    </div>`;
+}
+
+function specRow(k,v){ return v ? `<div class="spec"><div class="k">${k}</div><div class="v">${v}</div></div>` : ""; }
+
+function render(v){
+  if(!v || v.estimated_price==null){ return error("No hemos podido calcular el valor de este vehículo."); }
+  const c=condition(v.price_kind);
+  const rows=[];
+  if(v.trim) rows.push(["Versión", v.trim]);
+  if(v.body_class) rows.push(["Carrocería", v.body_class]);
+  if(v.vin) rows.push(["VIN", v.vin]);
+  if(rows.length) rows.push(["Moneda", v.currency]);  // only when other specs exist
+  const specs = rows.length ? `<div class="specs">${rows.map(r=>specRow(r[0],r[1])).join("")}</div>` : "";
+  out.innerHTML=`<div class="vcard fade">
+    <div class="vhead">
+      <div>
+        <div class="name">${[v.year,v.make,v.model].filter(Boolean).join(" ")}</div>
+        <div class="sub">Valoración de mercado</div>
+      </div>
+      ${c.label?`<div class="cond ${c.cls}">${c.label}</div>`:""}
+    </div>
+    <div class="vbody">
+      <div class="plabel">${c.plabel}</div>
+      <div class="price">${money(v.estimated_price)}</div>
+      ${rangeBar(v.price_low, v.price_high, v.estimated_price)}
+      ${specs}
+      <div class="vfoot">Datos de mercado de <a href="${v.source_url||'#'}" target="_blank">Edmunds</a> · decodificación NHTSA</div>
+    </div>
+  </div>`;
+}
+
+let poll=null;
+async function lookupVin(){
+  clearInterval(poll);
+  const vin=document.getElementById("vin").value.trim().toUpperCase();
+  if(vin.length!==17){ return error("El VIN debe tener 17 caracteres."); }
+  loading("Consultando el valor de tu vehículo…");
+  const {status,data}=await api("/vehicles/lookup/","POST",{vin});
+  if(status===400){ return error(data.detail||"VIN no válido."); }
+  if(data.status==="ready"){ return render(data.vehicle); }
+  // processing: poll until ready, failed, or timeout
+  loading("Estamos calculando el precio de mercado, un momento…");
+  let tries=0;
+  poll=setInterval(async()=>{
+    tries++;
+    const s=await api(`/vehicles/${vin}/status/`);
+    const v=s.data.vehicle, job=s.data.job;
+    if(v && v.estimated_price!=null){ clearInterval(poll); render(v); return; }
+    if((job && job.status==="failed") || tries>40){
+      clearInterval(poll);
+      error("No hemos podido obtener el precio de este vehículo. Puede que su modelo no esté disponible en nuestra fuente.");
+    }
+  },3000);
+}
+
+async function lookupModel(){
+  clearInterval(poll);
+  const make=document.getElementById("mk").value.trim();
+  const model=document.getElementById("mo").value.trim();
+  const year=parseInt(document.getElementById("yr").value)||null;
+  if(!make||!model){ return error("Indica al menos marca y modelo."); }
+  loading("Consultando el valor de mercado…");
+  const {data}=await api("/models/lookup/","POST",{make,model,year});
+  if(data.status==="ready"){ return render(data.model_data); }
+  loading("Estamos calculando el precio de mercado, un momento…");
+  let tries=0;
+  poll=setInterval(async()=>{
+    tries++;
+    const {data:d}=await api("/models/lookup/","POST",{make,model,year});
+    if(d.status==="ready"){ clearInterval(poll); render(d.model_data); return; }
+    if(tries>30){
+      clearInterval(poll);
+      error("No hemos podido obtener el precio de este modelo. Puede que no esté disponible en nuestra fuente.");
+    }
+  },4000);
+}
+
+document.getElementById("vin").addEventListener("keydown",e=>{ if(e.key==="Enter") lookupVin(); });
+</script>
+</body>
+</html>

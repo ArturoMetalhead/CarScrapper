@@ -17,6 +17,10 @@ class VehicleNotFound(ScraperError):
     """The source responded but has no data for that VIN."""
 
 
+class BlockedError(ScraperError):
+    """The source blocked us (anti-bot 403). Signals the worker to back off."""
+
+
 class AllSourcesFailed(ScraperError):
     """None of the configured sources could resolve the VIN."""
 
@@ -102,12 +106,13 @@ class BaseProvider:
         return result
 
     def scrape_model(
-        self, make: str, model: str, year: int | None = None, trim: str = ""
+        self, make: str, model: str, year: int | None = None, trim: str = "", series: str = ""
     ) -> ScrapedVehicle:
         """Scrape market data for a MODEL (used by the background worker).
 
         Returns a `ScrapedVehicle` with an empty vin: only make/model/year/trim
-        and `estimated_price` matter.
+        and `estimated_price` matter. `series` is an optional extra model-slug
+        hint (e.g. NHTSA "3-Series") used by providers that group by series.
         """
         response = self.fetch_model(make, model, year, trim)
         result = self.parse_model(response, make, model, year, trim)
@@ -115,7 +120,6 @@ class BaseProvider:
             result.source_url = self.source.build_model_url(make, model, year, trim)
         return result
 
-    # --- To be implemented by subclasses ---------------------------------
     def fetch(self, vin: str) -> requests.Response:
         raise NotImplementedError
 
@@ -132,7 +136,6 @@ class BaseProvider:
     ) -> ScrapedVehicle:
         raise NotImplementedError
 
-    # --- Shared utilities ------------------------------------------------
     def build_session(self) -> requests.Session:
         session = requests.Session()
         session.headers.update({"User-Agent": settings.SCRAPER_USER_AGENT})

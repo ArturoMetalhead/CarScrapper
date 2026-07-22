@@ -17,7 +17,7 @@ from statistics import median
 
 from bs4 import BeautifulSoup
 
-from .base import ScrapedVehicle, parse_price
+from .base import ScrapedVehicle, VehicleNotFound, parse_price
 from .generic import GenericProvider
 from .nodriver_fetch import NodriverFetchMixin
 from .registry import register
@@ -39,6 +39,61 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
     retry) to get past DataDome, which 403s Playwright/Selenium-driven browsers.
     """
 
+    def scrape_model(
+        self, make: str, model: str, year=None, trim: str = "", series: str = ""
+    ) -> ScrapedVehicle:
+        """Scrape a model, trying Edmunds' naming variants.
+
+        NHTSA returns engine-variant model names (e.g. BMW "328i", Mercedes
+        "C300") but Edmunds groups them by series/class ("3-series", "c-class").
+        We try, in order: the NHTSA "Series" (best signal, e.g. "3-Series"),
+        make-specific normalizations, then the original name. The result keeps
+        the ORIGINAL model name so it matches the VIN's decoded model in cache.
+        """
+        candidates = self._model_candidates(make, model, series)
+        for candidate in candidates:
+            response = self.fetch_model(make, candidate, year, trim)
+            result = self.parse_model(response, make, model, year, trim)
+            if result.estimated_price is not None:
+                if not result.source_url:
+                    result.source_url = self.source.build_model_url(make, candidate, year, trim)
+                return result
+        raise VehicleNotFound(
+            f"{self.source.name}: no price for {make} {model} {year} "
+            f"(tried: {', '.join(candidates)})."
+        )
+
+    @staticmethod
+    def _model_candidates(make: str, model: str, series: str = "") -> list[str]:
+        """Edmunds model slugs to try, most-likely first.
+
+        Uses NHTSA "Series" if present (BMW "3-Series"); otherwise make-specific
+        rules: BMW "328i"->"3-series", Mercedes "C300"->"c-class". Falls back to
+        the original model name. Other makes are used as-is.
+        """
+        m = (model or "").strip()
+        make_l = (make or "").lower()
+        cands: list[str] = []
+        if series and series.strip():
+            cands.append(series.strip())
+        if make_l == "bmw":
+            mm = re.match(r"^(\d)\d{2}", m)
+            if mm:
+                cands.append(f"{mm.group(1)}-series")
+        elif "mercedes" in make_l:
+            mm = re.match(r"^([a-zA-Z]{1,3})\d{2,3}", m)
+            if mm:
+                cands.append(f"{mm.group(1).lower()}-class")
+        if m:
+            cands.append(m)
+        seen, out = set(), []
+        for c in cands:
+            k = c.lower()
+            if k not in seen:
+                seen.add(k)
+                out.append(c)
+        return out or [m]
+
     def parse(self, response, vin: str) -> ScrapedVehicle:
         soup = BeautifulSoup(response.text, "lxml")
         data = self._extract_json_ld(soup)
@@ -46,7 +101,6 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
             result = self._from_json_ld(data, vin, response)
             if result.estimated_price or result.make:
                 return result
-        # Fallback: generic CSS-selector parsing.
         return super().parse(response, vin)
 
     def parse_model(
@@ -67,27 +121,26 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
         selectors = self.source.selectors or {}
         text = soup.get_text(" ", strip=True)
 
-        # 1) Edmunds' suggested price (new cars).
         suggested = None
         m = _SUGGEST_RE.search(text)
         if m:
             suggested = self._num(m.group(1))
 
-        # 2) Candidate price ranges "$low - $high" (MSRP range for new cars).
         candidate_ranges: list[tuple[Decimal, Decimal]] = []
         for rm in _RANGE_RE.finditer(text):
             lo, hi = self._num(rm.group(1)), self._num(rm.group(2))
             if lo is not None and hi is not None and lo <= hi:
                 candidate_ranges.append((lo, hi))
 
-        # 3) Used listings: median of listing prices (fallback headline).
         selector = selectors.get("model_price_nodes", ".heading-3")
         prices: list[Decimal] = []
         for node in soup.select(selector):
             price = self._valid_price(node.get_text(" ", strip=True))
             if price is not None:
                 prices.append(price)
-        listing_median = Decimal(round(median(prices))) if prices else None
+        listing_median = listing_low = listing_high = None
+        if prices:
+            listing_median, listing_low, listing_high = self._robust_listing_stats(prices)
 
         # Pick the headline price, its range and provenance.
         low = high = None
@@ -101,7 +154,7 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
             estimated, kind = Decimal(round((low + high) / 2)), "msrp_range_mid"
         elif listing_median is not None:
             estimated, kind = listing_median, "used_listings_median"
-            low, high = min(prices), max(prices)
+            low, high = listing_low, listing_high
         else:
             estimated, kind = None, ""
 
@@ -144,6 +197,20 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
         return None, None
 
     @staticmethod
+    def _robust_listing_stats(prices: list[Decimal]) -> tuple[Decimal, Decimal, Decimal]:
+        """Return (median, low, high) trimming outliers from the listing prices.
+
+        A model-year page also shows cross-sell / other-year listings whose
+        prices pollute the raw min/max (e.g. a $53k newer BMW on a 2013 3-Series
+        page). We keep only prices within a band around the median before taking
+        the spread, so the range reflects the actual model/year.
+        """
+        med = median(prices)
+        low_b, high_b = med * Decimal("0.35"), med * Decimal("2.5")
+        band = [p for p in prices if low_b <= p <= high_b] or list(prices)
+        return Decimal(round(median(band))), min(band), max(band)
+
+    @staticmethod
     def _num(raw: str) -> Decimal | None:
         """Parse a comma-thousands number and validate against the price range."""
         try:
@@ -171,7 +238,6 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
             return None
         return value
 
-    # --- Helpers ----------------------------------------------------------
     def _extract_json_ld(self, soup: BeautifulSoup) -> dict | None:
         """Find a JSON-LD block describing a Vehicle/Car/Product."""
         for tag in soup.find_all("script", type="application/ld+json"):

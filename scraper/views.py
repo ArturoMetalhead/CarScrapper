@@ -22,6 +22,8 @@ from .services import STATUS_READY, VinDecodeError, resolve_model, resolve_vin
 class HealthView(APIView):
     """Simple liveness endpoint."""
 
+    throttle_classes = []
+
     @extend_schema(responses=OpenApiTypes.OBJECT)
     def get(self, request):
         return Response({"status": "ok"})
@@ -137,6 +139,8 @@ class VehicleStatusView(APIView):
     job for it (useful for the frontend while it waits for the webhook).
     """
 
+    throttle_classes = []
+
     @extend_schema(responses=OpenApiTypes.OBJECT)
     def get(self, request, vin):
         vin = vin.strip().upper()
@@ -152,6 +156,7 @@ class VehicleStatusView(APIView):
 class VehicleListView(ListAPIView):
     """List resolved vehicles. GET /api/vehicles/"""
 
+    throttle_classes = []
     queryset = Vehicle.objects.all()
     serializer_class = VehicleSerializer
 
@@ -186,6 +191,8 @@ class WorkerControlView(APIView):
     endpoints let you stop and start it again at runtime.
     """
 
+    throttle_classes = []
+
     @extend_schema(responses=OpenApiTypes.OBJECT)
     def get(self, request):
         from .worker import controller
@@ -218,6 +225,8 @@ class CrawlerControlView(APIView):
     POST /api/crawler/start/   -> start the crawl planner
     POST /api/crawler/stop/    -> stop it
     """
+
+    throttle_classes = []
 
     @extend_schema(responses=OpenApiTypes.OBJECT)
     def get(self, request):

@@ -134,36 +134,64 @@ def refresh_stale(limit: int) -> int:
     return refreshed
 
 
+def _pending_crawl() -> int:
+    return ScrapeJob.objects.filter(
+        status=ScrapeJob.Status.PENDING, origin="crawl"
+    ).count()
+
+
 def run_planner(stop_event: threading.Event, planner: "CrawlPlanner") -> None:
-    """Periodically discover, top up the crawl queue and refresh stale data."""
+    """Periodically discover, top up the crawl queue and refresh stale data.
+
+    Discovery is INCREMENTAL: models are enqueued make-by-make as they are
+    discovered, so jobs appear within seconds instead of after the whole (slow)
+    NHTSA sweep. The queue is kept topped up to `queue_min`.
+    """
     interval = getattr(settings, "SCRAPER_CRAWL_PLAN_INTERVAL", 900)
     queue_min = getattr(settings, "SCRAPER_CRAWL_QUEUE_MIN", 20)
     batch = getattr(settings, "SCRAPER_CRAWL_BATCH", 50)
     discovery_ttl = timedelta(hours=getattr(settings, "SCRAPER_CRAWL_DISCOVERY_TTL_HOURS", 24))
+    timeout = getattr(settings, "SCRAPER_VIN_DECODE_TIMEOUT", 15)
 
     while not stop_event.is_set():
         try:
-            if not planner.frontier or planner.discovered_at is None or (
-                timezone.now() - planner.discovered_at > discovery_ttl
-            ):
-                planner.frontier = discover_frontier(stop_event=stop_event)
-                planner.discovered_at = timezone.now()
-
             planner.last_refreshed = refresh_stale(batch)
 
-            pending_crawl = ScrapeJob.objects.filter(
-                status=ScrapeJob.Status.PENDING, origin="crawl"
-            ).count()
-            if pending_crawl < queue_min:
-                planner.last_seeded = seed_crawl(planner.frontier, batch)
+            stale_frontier = planner.discovered_at is None or (
+                timezone.now() - planner.discovered_at > discovery_ttl
+            )
+            if not planner.frontier or stale_frontier:
+                # Build the frontier make-by-make, seeding as we go.
+                planner.phase = "discovering"
+                makes, years = _makes(), _years()
+                frontier, seeded = [], 0
+                for make in makes:
+                    if stop_event.is_set():
+                        break
+                    for year in years:
+                        if stop_event.is_set():
+                            break
+                        for model in _models_for(make, year, timeout):
+                            frontier.append((make, model, year))
+                    planner.frontier = list(frontier)  # progress (visible in status)
+                    if _pending_crawl() < queue_min:
+                        seeded += seed_crawl(frontier, batch)
+                planner.frontier = frontier
+                planner.discovered_at = timezone.now()
+                planner.last_seeded = seeded
             else:
-                planner.last_seeded = 0
+                planner.phase = "seeding"
+                planner.last_seeded = (
+                    seed_crawl(planner.frontier, batch) if _pending_crawl() < queue_min else 0
+                )
+            planner.phase = "idle"
             logger.info(
                 "Crawl plan cycle: seeded=%s refreshed=%s (frontier=%d).",
                 planner.last_seeded, planner.last_refreshed, len(planner.frontier),
             )
         except Exception:  # noqa: BLE001 — a bad cycle must not kill the planner
             logger.exception("Crawl planner cycle failed")
+            planner.phase = "idle"
         stop_event.wait(interval)
 
 
@@ -175,6 +203,7 @@ class CrawlPlanner:
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._started_at = None
+        self.phase = "idle"
         self.frontier: list[tuple[str, str, int]] = []
         self.discovered_at = None
         self.last_seeded = 0
@@ -219,6 +248,7 @@ class CrawlPlanner:
         }
         return {
             "running": self.is_running(),
+            "phase": self.phase if self.is_running() else "stopped",
             "started_at": self._started_at,
             "frontier_size": len(self.frontier),
             "discovered_at": self.discovered_at,

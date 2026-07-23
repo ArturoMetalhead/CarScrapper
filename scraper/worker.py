@@ -144,6 +144,7 @@ def process_job(job: ScrapeJob, log: LogFn = _noop) -> None:
 
     job.result = vm
     job.status = ScrapeJob.Status.DONE
+    job.attempts += 1  # count the successful try too (not only failures)
     job.finished_at = timezone.now()
     job.save(update_fields=["result", "status", "attempts", "finished_at"])
     n = apply_model_to_vehicles(vm)

@@ -3,8 +3,17 @@ from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
 from rest_framework.generics import ListAPIView, RetrieveAPIView
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+
+class RecentPagination(PageNumberPagination):
+    """Small page for the recent-vehicles list (panel polls it every 8s)."""
+
+    page_size = 20
+    page_size_query_param = "page_size"
+    max_page_size = 100
 
 from .models import ScrapeJob, ScraperSource, Vehicle
 from .serializers import (
@@ -175,11 +184,12 @@ class JobStatusView(APIView):
 
 
 class VehicleListView(ListAPIView):
-    """List resolved vehicles. GET /api/vehicles/"""
+    """List resolved vehicles, most-recent first. GET /api/vehicles/?page_size=10"""
 
     throttle_classes = []
-    queryset = Vehicle.objects.all()
+    queryset = Vehicle.objects.order_by("-updated_at")
     serializer_class = VehicleSerializer
+    pagination_class = RecentPagination
 
 
 class VehicleDetailView(RetrieveAPIView):
@@ -229,8 +239,15 @@ class WorkerControlView(APIView):
             return Response({"ok": True, "detail": detail, **controller.status()})
 
         if action == "stop":
-            stopped = controller.stop()
-            detail = "Worker stopped." if stopped else "The worker was not running."
+            # Short join so the HTTP request returns fast; the stop flag is set
+            # either way and the worker exits after the in-flight scrape.
+            stopped = controller.stop(timeout=3)
+            if stopped:
+                detail = "Worker stopped."
+            elif controller.is_running():
+                detail = "Stop requested — the worker will stop after the current scrape finishes."
+            else:
+                detail = "The worker was not running."
             return Response({"ok": True, "detail": detail, **controller.status()})
 
         return Response(

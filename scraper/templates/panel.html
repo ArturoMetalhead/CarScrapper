@@ -342,22 +342,16 @@ async function lookupModel() {
     const procLabel = [yr, mk, mo].filter(Boolean).join(" ");
     box.innerHTML = processingBox(procLabel);
     updateProcSource(procLabel);
-    let tries = 0;
-    pollTimer = setInterval(async () => {
-      tries++;
-      updateProcSource(procLabel);
-      const { data: d } = await api("/models/lookup/", "POST", { make: mk, model: mo, year: yr });
-      if (d.status === "ready") {
-        clearInterval(pollTimer);
-        box.innerHTML = renderVehicle(d.model_data, "ready");
+    // Wait on the ENQUEUED job (stop on 'failed') instead of re-POSTing the
+    // lookup every 4s, which would spawn a new job each time and hammer a
+    // blocking source.
+    waitForJob(data.job_id, procLabel,
+      async () => {
+        const r = await api("/models/lookup/", "POST", { make: mk, model: mo, year: yr });
+        box.innerHTML = renderVehicle(r.data.model_data, "ready");
         loadRecent();
-        return;
-      }
-      if (tries > 30) {
-        clearInterval(pollTimer);
-        box.innerHTML = `<div class="badge proc">No se pudo obtener el precio (la fuente no está disponible ahora).</div>`;
-      }
-    }, 4000);
+      },
+      (msg) => { box.innerHTML = `<div class="badge proc">No se pudo obtener el precio: ${msg}.</div>`; });
   }
 }
 
@@ -469,8 +463,8 @@ async function refreshStatus() {
 
 async function loadRecent() {
   try {
-    const { data } = await api("/vehicles/");
-    const rows = (Array.isArray(data) ? data : []).slice(0, 10);
+    const { data } = await api("/vehicles/?page_size=10");
+    const rows = (Array.isArray(data) ? data : (data && data.results) || []).slice(0, 10);
     document.getElementById("recent").innerHTML = rows.length
       ? rows.map(v => `<tr>
           <td>${[v.year, v.make, v.model].filter(Boolean).join(" ")}<br>

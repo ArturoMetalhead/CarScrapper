@@ -27,8 +27,9 @@ from .registry import register
 logger = logging.getLogger(__name__)
 
 # Plausible car price range (USD) to filter out noise when aggregating.
-_PRICE_MIN = 1000
-_PRICE_MAX = 200000
+# Configurable so luxury/exotics (>$200k) aren't silently dropped.
+_PRICE_MIN = getattr(settings, "SCRAPER_PRICE_MIN", 1000)
+_PRICE_MAX = getattr(settings, "SCRAPER_PRICE_MAX", 500000)
 _PRICE_RE = re.compile(r"\$\s?(\d{1,3}(?:,\d{3})+)")
 # Edmunds' own labeled values: "Edmunds suggests you pay $X" and a "$X - $Y" range.
 _SUGGEST_RE = re.compile(r"suggests?\s+you\s+pay[^$]{0,25}\$([\d,]{4,})", re.I)

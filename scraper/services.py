@@ -278,22 +278,36 @@ def scrape_model_data(
             errors[source.name] = "Could not extract the model price."
             continue
 
-        vm, _ = VehicleModel.objects.update_or_create(
-            make=make,
-            model=model,
-            year=year,
-            trim="",  # make/model/year granularity (the Edmunds URL ignores trim)
-            defaults={
-                "estimated_price": result.estimated_price,
-                "price_low": result.price_low,
-                "price_high": result.price_high,
-                "price_kind": result.price_kind,
-                "currency": result.currency or "USD",
-                "source": source,
-                "source_url": result.source_url,
-                "raw_data": result.raw_data,
-            },
+        defaults = {
+            "estimated_price": result.estimated_price,
+            "price_low": result.price_low,
+            "price_high": result.price_high,
+            "price_kind": result.price_kind,
+            "currency": result.currency or "USD",
+            "source": source,
+            "source_url": result.source_url,
+            "raw_data": result.raw_data,
+        }
+        # Case-insensitive upsert. NHTSA returns UPPERCASE makes ("HONDA") while
+        # model searches carry the user's casing ("honda"/"Honda"); a plain
+        # update_or_create (exact match) would then create duplicate rows for the
+        # same car. Reuse any existing row for this make/model/year (trim="" =
+        # model-year granularity) regardless of case, so there is exactly one.
+        vm = (
+            VehicleModel.objects.filter(
+                make__iexact=make, model__iexact=model, year=year, trim=""
+            )
+            .order_by("id")
+            .first()
         )
+        if vm is not None:
+            for field, value in defaults.items():
+                setattr(vm, field, value)
+            vm.save()
+        else:
+            vm = VehicleModel.objects.create(
+                make=make, model=model, year=year, trim="", **defaults
+            )
         logger.info("Model %s %s %s resolved by '%s'.", year, make, model, source.name)
         return vm
 

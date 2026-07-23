@@ -98,6 +98,8 @@ class VinLookupSerializer(serializers.Serializer):
 
     vin = serializers.CharField(max_length=17, min_length=17)
     webhook_url = serializers.URLField(required=False, allow_blank=True, default="")
+    # force=True re-scrapes even if cached data is fresh (admin "re-scrape" button).
+    force = serializers.BooleanField(required=False, default=False)
 
     def validate_vin(self, value: str) -> str:
         return _validate_vin(value)
@@ -124,3 +126,5 @@ class ModelLookupSerializer(serializers.Serializer):
     model = serializers.CharField(max_length=100)
     year = serializers.IntegerField(required=False, allow_null=True, min_value=1900, max_value=2100)
     webhook_url = serializers.URLField(required=False, allow_blank=True, default="")
+    # force=True re-scrapes even if cached data is fresh (admin "re-scrape" button).
+    force = serializers.BooleanField(required=False, default=False)

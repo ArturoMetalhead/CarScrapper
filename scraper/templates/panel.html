@@ -46,6 +46,8 @@
     button.go { background:var(--acc); color:#04222f; border:none; font-weight:700;
       border-radius:9px; padding:0 20px; cursor:pointer; font-size:15px; }
     button.go:hover { filter:brightness(1.08); }
+    button.go.rescrape { background:transparent; border:1px solid var(--acc); color:var(--acc); }
+    button.go.rescrape:hover { background:rgba(56,189,248,.12); filter:none; }
     .hint { color:var(--mut); font-size:12.5px; margin-top:8px; }
     .result { margin-top:16px; }
     .result .head { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
@@ -123,6 +125,7 @@
             <input class="grow" id="vin" placeholder="VIN (17 caracteres)" maxlength="17"
                    value="1HGCV1F13KA000000">
             <button class="go" onclick="lookupVin()">Buscar</button>
+            <button class="go rescrape" onclick="rescrapeVin()" title="Fuerza un scrape nuevo, ignora el caché y guarda el resultado">Reescrapear</button>
           </div>
           <div class="hint">Decodifica el VIN con NHTSA y busca el precio de mercado del modelo.</div>
         </div>
@@ -133,6 +136,7 @@
             <input class="grow" id="mo" placeholder="Modelo" value="CX-5">
             <input id="yr" placeholder="Año" value="2026" style="width:90px">
             <button class="go" onclick="lookupModel()">Buscar</button>
+            <button class="go rescrape" onclick="rescrapeModel()" title="Fuerza un scrape nuevo, ignora el caché y guarda el resultado">Reescrapear</button>
           </div>
           <div class="hint">Busca directamente por modelo (ideal para coches nuevos).</div>
         </div>
@@ -355,6 +359,55 @@ async function lookupModel() {
       }
     }, 4000);
   }
+}
+
+// --- Re-scrape (force): ignore the cache, scrape fresh, save & show the new result ---
+// Polls the ENQUEUED job (not the vehicle/model), so it waits for the fresh scrape
+// instead of instantly returning the previously cached value.
+function waitForJob(jobId, label, onDone, onFail) {
+  if (!jobId) { onFail("No se pudo encolar el re-scrape (¿worker parado?)."); return; }
+  let tries = 0;
+  pollTimer = setInterval(async () => {
+    tries++;
+    updateProcSource(label);
+    const { data } = await api(`/jobs/${jobId}/`);
+    const st = data && data.status;
+    if (st === "done") { clearInterval(pollTimer); onDone(); return; }
+    if (st === "failed") { clearInterval(pollTimer); onFail(data.last_error || "el scrape falló"); return; }
+    if (tries > 60) { clearInterval(pollTimer); onFail("tiempo de espera agotado"); }
+  }, 3000);
+}
+
+async function rescrapeVin() {
+  clearInterval(pollTimer);
+  const vin = document.getElementById("vin").value.trim().toUpperCase();
+  const box = document.getElementById("result");
+  box.innerHTML = `<div class="muted"><span class="spin"></span> Reescrapeando (ignora caché)…</div>`;
+  const { status, data } = await api("/vehicles/lookup/", "POST", { vin, force: true });
+  if (status === 400) { box.innerHTML = `<div class="badge proc">${data.detail || "VIN inválido"}</div>`; return; }
+  const v0 = data.vehicle || {};
+  const label = [v0.year, v0.make, v0.model].filter(Boolean).join(" ") || vin;
+  box.innerHTML = processingBox(label);
+  updateProcSource(label);
+  waitForJob(data.job_id, label,
+    async () => { const r = await api("/vehicles/lookup/", "POST", { vin }); box.innerHTML = renderVehicle(r.data.vehicle, "ready"); loadRecent(); },
+    (msg) => { box.innerHTML = `<div class="badge proc">No se pudo reescrapear: ${msg}.</div>`; });
+}
+
+async function rescrapeModel() {
+  clearInterval(pollTimer);
+  const mk = document.getElementById("mk").value.trim();
+  const mo = document.getElementById("mo").value.trim();
+  const yr = parseInt(document.getElementById("yr").value) || null;
+  const box = document.getElementById("result");
+  box.innerHTML = `<div class="muted"><span class="spin"></span> Reescrapeando (ignora caché)…</div>`;
+  const { data } = await api("/models/lookup/", "POST", { make: mk, model: mo, year: yr, force: true });
+  const label = [yr, mk, mo].filter(Boolean).join(" ");
+  box.innerHTML = processingBox(label);
+  updateProcSource(label);
+  waitForJob(data.job_id, label,
+    async () => { const r = await api("/models/lookup/", "POST", { make: mk, model: mo, year: yr }); box.innerHTML = renderVehicle(r.data.model_data, "ready"); loadRecent(); },
+    (msg) => { box.innerHTML = `<div class="badge proc">No se pudo reescrapear: ${msg}.</div>`; });
 }
 
 async function refreshStatus() {

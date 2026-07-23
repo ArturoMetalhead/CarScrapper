@@ -56,8 +56,16 @@ _INVENTORY_NOISE_RE = re.compile(
 # aria-label ("Click to save favorite $25,038 2025 Honda HR-V Sport 4dr SUV", or
 # "... $39,270 Certified 2026 Mazda CX-5 ..."): one entry per real listing. Group
 # 2 holds the text right after the price, from which the year is read.
-_LISTING_ARIA_RE = re.compile(r"save\s+favorite\s+\$([\d,]{4,})([^\"]{0,30})", re.I)
+_LISTING_ARIA_RE = re.compile(r"save\s+favorite\s+\$([\d,]{4,})([^\"]{0,60})", re.I)
 _LISTING_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+
+
+def trim_regex(trim: str):
+    """Word-boundary matcher for a trim within a listing title, tolerant of the
+    hyphen/space difference: NHTSA writes "EX-V6" while the sites write "EX V6",
+    so a hyphen matches hyphen-or-space."""
+    pattern = re.escape((trim or "").strip()).replace(r"\-", r"[\s\-]")
+    return re.compile(r"\b" + pattern + r"\b", re.I)
 
 
 @register("edmunds")
@@ -86,14 +94,16 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
             if result.estimated_price is not None:
                 if not result.source_url:
                     result.source_url = self.source.build_model_url(make, candidate, year, trim)
-                self._enrich_with_market(result, make, candidate, year)
+                self._enrich_with_market(result, make, candidate, year, trim)
                 return result
         raise VehicleNotFound(
             f"{self.source.name}: no price for {make} {model} {year} "
             f"(tried: {', '.join(candidates)})."
         )
 
-    def _enrich_with_market(self, result, make: str, model: str, year=None) -> None:
+    def _enrich_with_market(
+        self, result, make: str, model: str, year=None, trim: str = ""
+    ) -> None:
         """Merge REAL market data from Edmunds' /for-sale/ inventory page.
 
         Two layers, combined (not replaced):
@@ -114,7 +124,7 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
         if not getattr(settings, "SCRAPER_EDMUNDS_USE_INVENTORY", True):
             return
         try:
-            prices, average = self._scrape_inventory(make, model, year)
+            prices, average = self._scrape_inventory(make, model, year, trim=trim)
         except (BlockedError, ScraperError, VehicleNotFound):
             return  # inventory unavailable — keep the MSRP-based result
         except Exception:  # noqa: BLE001 — enrichment must never break the scrape
@@ -147,7 +157,7 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
         else:
             result.estimated_price = average or market_median
         result.price_kind = "edmunds_market"
-        result.source_url = self._inventory_url(make, model, year)
+        result.source_url = self._inventory_url(make, model, year, trim=trim)
         result.raw_data = {
             **(result.raw_data or {}),
             "market_listings": len(prices),
@@ -160,32 +170,39 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
             "suggested": float(model_estimate) if model_kind == "edmunds_suggested" else None,
         }
 
-    def _inventory_url(self, make: str, model: str, year=None, sort: str | None = None) -> str:
+    def _inventory_url(
+        self, make: str, model: str, year=None, sort: str | None = None, trim: str = ""
+    ) -> str:
         """URL of the model's /for-sale/ inventory page.
 
-        IMPORTANT: the year MUST go in the `year=YYYY-YYYY` query param, NOT the
-        path. Adding `?sort=` to the path form (/make/model/YEAR/for-sale/) makes
-        Edmunds drop the year filter and return ALL model years — so a 2018 search
-        would surface 2013 and 2026 cars at the price extremes. The query-param
-        form keeps the year while sorting. `radius` widens the search so the true
-        cheapest/dearest listings appear.
+        IMPORTANT: year (and trim) MUST go in query params, NOT the path. Adding
+        `?sort=` to the path form (/make/model/YEAR/for-sale/) makes Edmunds drop
+        the year filter and return ALL model years. The query-param form keeps the
+        filters while sorting. `trim=<model-slug>|<trim-slug>` narrows to the exact
+        trim (e.g. only "Sport", not every HR-V trim) — used for VIN searches.
+        `radius` widens the search so the true cheapest/dearest listings appear.
         """
         base = self.source.build_model_url(make, model).rstrip("/") + "/for-sale/"
         params = []
         if year:
             params.append(f"year={year}-{year}")
+        if trim:
+            model_slug = "-".join(str(model).strip().lower().split())
+            trim_slug = "-".join(str(trim).strip().lower().split())
+            params.append(f"trim={model_slug}%7C{trim_slug}")
         if sort:
             params.append("sort=" + sort.replace(":", "%3A"))
         params.append("radius=6000")
         return f"{base}?{'&'.join(params)}"
 
-    def _scrape_inventory(self, make: str, model: str, year=None):
+    def _scrape_inventory(self, make: str, model: str, year=None, trim: str = ""):
         """Fetch the /for-sale/ inventory and return (listing_prices, average).
 
         Edmunds serves a price-sorted page server-side, so we read the real market
         floor from the ascending page ("price:asc", cheapest first) and — unless
         disabled — the ceiling from the descending page ("price:desc"), and combine
         them. This captures the true min and max without paginating the whole list.
+        When `trim` is given (VIN searches) the results are narrowed to that trim.
         Best-effort: stop if a page blocks and use whatever was gathered.
 
         Prices come from each card's "save favorite" aria-label (one clean price
@@ -196,11 +213,12 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
             sorts.append("price:desc")
         all_prices: list[Decimal] = []
         average = None
+        trim_re = trim_regex(trim) if trim else None
         for sort in sorts:
             try:
                 resp = self._fetch_url(
-                    self._inventory_url(make, model, year, sort=sort),
-                    f"{year} {make} {model} inventory {sort}",
+                    self._inventory_url(make, model, year, sort=sort, trim=trim),
+                    f"{year} {make} {model} {trim} inventory {sort}".replace("  ", " "),
                 )
             except (BlockedError, VehicleNotFound, ScraperError):
                 break  # use whatever we already gathered
@@ -215,13 +233,17 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
                 price = self._num(m.group(1))
                 if price is None:
                     continue
+                chunk = m.group(2) or ""
                 if year is not None:  # drop any listing of a different model year
-                    ym = _LISTING_YEAR_RE.search(m.group(2) or "")
+                    ym = _LISTING_YEAR_RE.search(chunk)
                     if ym and int(ym.group(0)) != year:
                         continue
+                if trim_re is not None and not trim_re.search(chunk):
+                    continue  # drop any listing of a different trim (VIN searches)
                 page_prices.append(price)
-            if not page_prices:
+            if not page_prices and not trim:
                 # Fallback (older layout): read from text after stripping ads/deltas.
+                # Skipped for trim searches (the text has no reliable per-trim info).
                 clean = _INVENTORY_NOISE_RE.sub("  ", text)
                 page_prices = [
                     p for m in _PRICE_RE.finditer(clean) if (p := self._num(m.group(1))) is not None

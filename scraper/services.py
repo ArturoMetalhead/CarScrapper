@@ -77,10 +77,19 @@ def is_fresh(vehicle_model: VehicleModel | None) -> bool:
     return timezone.now() - vehicle_model.updated_at <= _ttl()
 
 
-def _find_model(make: str, model: str, year: int | None) -> VehicleModel | None:
-    """Find market data by model (make/model/year granularity)."""
+def _find_model(
+    make: str, model: str, year: int | None, trim: str = ""
+) -> VehicleModel | None:
+    """Find cached market data (make/model/year/trim granularity).
+
+    trim="" is the model-level row (all trims, used by model searches); a specific
+    trim from a VIN decode matches its own row, so a Sport and an LX don't share a
+    price.
+    """
     return (
-        VehicleModel.objects.filter(make__iexact=make, model__iexact=model, year=year)
+        VehicleModel.objects.filter(
+            make__iexact=make, model__iexact=model, year=year, trim__iexact=trim
+        )
         .order_by("-updated_at")
         .first()
     )
@@ -98,20 +107,26 @@ def _link_model(vehicle: Vehicle, vm: VehicleModel) -> None:
     ])
 
 
-def resolve_vin(vin: str, webhook_url: str = "") -> tuple[Vehicle, str]:
+def resolve_vin(
+    vin: str, webhook_url: str = "", force: bool = False
+) -> tuple[Vehicle, str, "ScrapeJob | None"]:
     """Resolve a VIN: instant cache hit or enqueue background scraping.
 
+    `force=True` skips the fresh-cache short-circuit and always enqueues a fresh
+    scrape (the admin "re-scrape" button).
+
     Returns:
-        (vehicle, status) where status is "ready" (fresh data available) or
-        "processing" (enqueued; the price will arrive via webhook / on lookup).
+        (vehicle, status, job) where status is "ready" (fresh data available) or
+        "processing" (enqueued); job is the enqueued ScrapeJob, or None if served
+        from cache.
 
     Raises:
         VinDecodeError: if NHTSA cannot decode the VIN.
     """
     vehicle = Vehicle.objects.select_related("vehicle_model").filter(vin=vin).first()
 
-    if vehicle and is_fresh(vehicle.vehicle_model):
-        return vehicle, STATUS_READY
+    if not force and vehicle and is_fresh(vehicle.vehicle_model):
+        return vehicle, STATUS_READY, None
 
     if vehicle and vehicle.make and vehicle.model:
         make, model, year, trim = vehicle.make, vehicle.model, vehicle.year, vehicle.trim
@@ -133,31 +148,38 @@ def resolve_vin(vin: str, webhook_url: str = "") -> tuple[Vehicle, str]:
             },
         )
 
-    vm = _find_model(make, model, year)
-    if is_fresh(vm):
+    vm = _find_model(make, model, year, trim)
+    if not force and is_fresh(vm):
         _link_model(vehicle, vm)
-        return vehicle, STATUS_READY
+        return vehicle, STATUS_READY, None
 
-    enqueue_scrape(make, model, year, trim="", vin=vin, webhook_url=webhook_url, series=series)
+    job = enqueue_scrape(
+        make, model, year, trim=trim, vin=vin, webhook_url=webhook_url,
+        series=series, origin="rescrape" if force else "lookup",
+    )
     if vm:
         _link_model(vehicle, vm)
-    return vehicle, STATUS_PROCESSING
+    return vehicle, STATUS_PROCESSING, job
 
 
 def resolve_model(
-    make: str, model: str, year: int | None = None, webhook_url: str = ""
-) -> tuple[VehicleModel | None, str]:
+    make: str, model: str, year: int | None = None, webhook_url: str = "", force: bool = False
+) -> tuple[VehicleModel | None, str, "ScrapeJob | None"]:
     """Resolve market data by MODEL directly (no VIN needed).
 
-    Useful for searching new cars by make/model/year. Returns (vehicle_model,
-    status): "ready" if fresh cached data exists, or "processing" if a scrape was
-    enqueued (a stale VehicleModel may be returned meanwhile, or None).
+    Useful for searching new cars by make/model/year. `force=True` re-scrapes even
+    if fresh cached data exists (admin "re-scrape" button). Returns (vehicle_model,
+    status, job): "ready" if fresh cached data exists, or "processing" if a scrape
+    was enqueued; job is the enqueued ScrapeJob or None.
     """
     vm = _find_model(make, model, year)
-    if is_fresh(vm):
-        return vm, STATUS_READY
-    enqueue_scrape(make, model, year, webhook_url=webhook_url, origin="model_lookup")
-    return vm, STATUS_PROCESSING
+    if not force and is_fresh(vm):
+        return vm, STATUS_READY, None
+    job = enqueue_scrape(
+        make, model, year, webhook_url=webhook_url,
+        origin="rescrape" if force else "model_lookup",
+    )
+    return vm, STATUS_PROCESSING, job
 
 
 # Job priorities (lower = processed first).
@@ -185,7 +207,9 @@ def enqueue_scrape(
     the existing job, the existing job is bumped up so it jumps ahead.
     """
     existing = (
-        ScrapeJob.objects.filter(make__iexact=make, model__iexact=model, year=year)
+        ScrapeJob.objects.filter(
+            make__iexact=make, model__iexact=model, year=year, trim__iexact=trim
+        )
         .filter(Q(status=ScrapeJob.Status.PENDING) | Q(status=ScrapeJob.Status.RUNNING))
         .first()
     )
@@ -212,13 +236,15 @@ def enqueue_scrape(
 
 
 def apply_model_to_vehicles(vm: VehicleModel) -> int:
-    """Propagate a freshly scraped model's price to all its VINs.
+    """Propagate a freshly scraped model's price to its VINs.
 
-    Updates the known `Vehicle`s of that model/year so their lookups return the
-    fresh data. Returns how many vehicles were updated.
+    Matches the VehicleModel's trim exactly: a trim-specific row (from a VIN
+    search, e.g. Sport) updates only that trim's VINs, and a model-level row
+    (trim="") updates only trim-less VINs — so a model-level (crawler) scrape never
+    clobbers a VIN that has trim-specific pricing. Returns how many were updated.
     """
     vehicles = Vehicle.objects.filter(
-        make__iexact=vm.make, model__iexact=vm.model, year=vm.year
+        make__iexact=vm.make, model__iexact=vm.model, year=vm.year, trim__iexact=vm.trim
     )
     updated = 0
     for vehicle in vehicles:
@@ -295,7 +321,7 @@ def scrape_model_data(
         # model-year granularity) regardless of case, so there is exactly one.
         vm = (
             VehicleModel.objects.filter(
-                make__iexact=make, model__iexact=model, year=year, trim=""
+                make__iexact=make, model__iexact=model, year=year, trim__iexact=trim
             )
             .order_by("id")
             .first()
@@ -306,7 +332,7 @@ def scrape_model_data(
             vm.save()
         else:
             vm = VehicleModel.objects.create(
-                make=make, model=model, year=year, trim="", **defaults
+                make=make, model=model, year=year, trim=trim, **defaults
             )
         logger.info("Model %s %s %s resolved by '%s'.", year, make, model, source.name)
         return vm

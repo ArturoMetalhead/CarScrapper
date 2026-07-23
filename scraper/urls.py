@@ -4,6 +4,7 @@ from django.urls import path
 from .views import (
     CrawlerControlView,
     HealthView,
+    JobStatusView,
     ModelLookupView,
     SourceListView,
     VehicleDetailView,
@@ -24,6 +25,7 @@ urlpatterns = [
     path("crawler/", CrawlerControlView.as_view(), name="crawler-status"),
     path("crawler/<str:action>/", CrawlerControlView.as_view(), name="crawler-control"),
     path("models/lookup/", ModelLookupView.as_view(), name="model-lookup"),
+    path("jobs/<int:job_id>/", JobStatusView.as_view(), name="job-status"),
     path("vehicles/", VehicleListView.as_view(), name="vehicle-list"),
     path("vehicles/lookup/", VehicleLookupView.as_view(), name="vehicle-lookup"),
     path("vehicles/prewarm/", VehiclePrewarmView.as_view(), name="vehicle-prewarm"),

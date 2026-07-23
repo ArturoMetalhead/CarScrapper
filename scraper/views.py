@@ -47,9 +47,10 @@ class VehicleLookupView(APIView):
         payload.is_valid(raise_exception=True)
         vin = payload.validated_data["vin"]
         webhook_url = payload.validated_data.get("webhook_url", "")
+        force = payload.validated_data.get("force", False)
 
         try:
-            vehicle, state = resolve_vin(vin, webhook_url=webhook_url)
+            vehicle, state, job = resolve_vin(vin, webhook_url=webhook_url, force=force)
         except VinDecodeError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -61,6 +62,7 @@ class VehicleLookupView(APIView):
             {
                 "status": state,
                 "vehicle": data,
+                "job_id": job.id if job else None,
                 "detail": (
                     "Market data in progress. You will be notified via webhook when "
                     "ready; you can also look up the VIN later."
@@ -90,7 +92,7 @@ class VehiclePrewarmView(APIView):
         results = []
         for vin in payload.validated_data["vins"]:
             try:
-                _, state = resolve_vin(vin, webhook_url=webhook_url)
+                _, state, _ = resolve_vin(vin, webhook_url=webhook_url)
                 results.append({"vin": vin, "status": state})
             except VinDecodeError as exc:
                 results.append({"vin": vin, "status": "error", "detail": str(exc)})
@@ -117,8 +119,9 @@ class ModelLookupView(APIView):
         model = payload.validated_data["model"]
         year = payload.validated_data.get("year")
         webhook_url = payload.validated_data.get("webhook_url", "")
+        force = payload.validated_data.get("force", False)
 
-        vm, state = resolve_model(make, model, year, webhook_url=webhook_url)
+        vm, state, job = resolve_model(make, model, year, webhook_url=webhook_url, force=force)
         data = VehicleModelSerializer(vm).data if vm else None
         if state == STATUS_READY:
             return Response({"status": STATUS_READY, "model_data": data})
@@ -126,6 +129,7 @@ class ModelLookupView(APIView):
             {
                 "status": state,
                 "model_data": data,
+                "job_id": job.id if job else None,
                 "detail": "Market data in progress. You will be notified via webhook when ready.",
             },
             status=status.HTTP_202_ACCEPTED,
@@ -151,6 +155,23 @@ class VehicleStatusView(APIView):
             "vehicle": VehicleSerializer(vehicle).data if vehicle else None,
             "job": ScrapeJobSerializer(job).data if job else None,
         })
+
+
+class JobStatusView(APIView):
+    """State of a scrape job by id. GET /api/jobs/<id>/
+
+    Used by the admin "re-scrape" button to wait for a FORCED scrape to finish
+    (so it shows the freshly scraped result instead of the previously cached one).
+    """
+
+    throttle_classes = []
+
+    @extend_schema(responses=ScrapeJobSerializer)
+    def get(self, request, job_id):
+        job = ScrapeJob.objects.filter(pk=job_id).first()
+        if job is None:
+            return Response({"detail": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(ScrapeJobSerializer(job).data)
 
 
 class VehicleListView(ListAPIView):

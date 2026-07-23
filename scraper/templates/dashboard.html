@@ -63,14 +63,16 @@
       background:linear-gradient(90deg,rgba(56,189,248,.10),rgba(129,140,248,.10));}
     .vhead .name{font-size:22px; font-weight:800;}
     .vhead .sub{color:var(--mut); font-size:13px; margin-top:2px;}
-    .cond{font-size:12px; font-weight:700; padding:6px 12px; border-radius:999px;
-      border:1px solid var(--line); white-space:nowrap;}
-    .cond.nuevo{color:var(--acc); border-color:rgba(56,189,248,.5); background:rgba(56,189,248,.08);}
-    .cond.usado{color:var(--ok); border-color:rgba(52,211,153,.5); background:rgba(52,211,153,.08);}
     .vbody{padding:24px;}
-    .plabel{color:var(--mut); font-size:13px; text-transform:uppercase; letter-spacing:1px;}
-    .price{font-size:52px; font-weight:900; letter-spacing:-1px; margin:4px 0 2px;
-      font-variant-numeric:tabular-nums;
+    .prices{display:flex; gap:12px; text-align:center; flex-wrap:wrap; margin-bottom:4px;}
+    .prices.one{justify-content:center;}
+    .pblock{flex:1; min-width:130px; background:rgba(0,0,0,.22); border:1px solid var(--line);
+      border-radius:16px; padding:16px 12px;}
+    .pblock.main{background:linear-gradient(180deg,rgba(52,211,153,.12),rgba(56,189,248,.05));
+      border-color:rgba(52,211,153,.4);}
+    .pcap{color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.6px; margin-bottom:8px;}
+    .pval{font-size:26px; font-weight:800; letter-spacing:-.3px; font-variant-numeric:tabular-nums;}
+    .pblock.main .pval{font-size:42px; font-weight:900; letter-spacing:-1px;
       background:linear-gradient(90deg,#a7f3d0,#34d399); -webkit-background-clip:text; background-clip:text; color:transparent;}
     .rangewrap{margin:20px 0 6px;}
     .rtrack{position:relative; height:8px; border-radius:999px;
@@ -115,7 +117,7 @@
         <button class="btn" onclick="lookupModel()">Valorar</button>
       </div>
 
-      <div class="hint">Cálculo basado en datos de mercado reales · sin registro</div>
+      <div class="hint">Cálculo basado en datos de mercado reales</div>
     </div>
 
     <div id="out"></div>
@@ -146,10 +148,20 @@ function loading(msg){
 }
 function error(msg){ out.innerHTML=`<div class="err fade">${msg}</div>`; }
 
-function condition(kind){
-  if(kind==="used_listings_median") return {cls:"usado", label:"Usado", plabel:"Valor de mercado estimado"};
-  if(kind==="edmunds_suggested"||kind==="msrp_range_mid") return {cls:"nuevo", label:"Nuevo", plabel:"Precio sugerido (MSRP)"};
-  return {cls:"nuevo", label:"", plabel:"Precio estimado"};
+function priceBlocks(v){
+  // Three labelled prices: minimum, estimated average, maximum.
+  const est = `<div class="pblock main">
+      <div class="pcap">Precio Sugerido</div>
+      <div class="pval">${money(v.estimated_price)}</div>
+    </div>`;
+  if(v.price_low==null || v.price_high==null){
+    return `<div class="prices one">${est}</div>`;
+  }
+  return `<div class="prices">
+    <div class="pblock"><div class="pcap">Precio Mínimo</div><div class="pval">${money(v.price_low)}</div></div>
+    ${est}
+    <div class="pblock"><div class="pcap">Precio Máximo</div><div class="pval">${money(v.price_high)}</div></div>
+  </div>`;
 }
 
 function rangeBar(low, high, est){
@@ -158,20 +170,41 @@ function rangeBar(low, high, est){
   pct = Math.max(2, Math.min(98, pct));
   return `<div class="rangewrap">
       <div class="rtrack"><div class="rmark" style="left:${pct}%"></div></div>
-      <div class="rends"><span>${money(low)}</span><span>${money(high)}</span></div>
     </div>`;
 }
 
 function specRow(k,v){ return v ? `<div class="spec"><div class="k">${k}</div><div class="v">${v}</div></div>` : ""; }
 
+// Technical specs decoded from the VIN via NHTSA (present only for VIN lookups).
+function nhtsaSpecs(v){
+  const n = v && v.raw_data && v.raw_data.nhtsa;
+  if(!n) return [];
+  const val = x => { const s=(x==null?"":String(x)).trim(); return (s===""||s==="0") ? "" : s; };
+  const fuel = {Gasoline:"Gasolina", Electric:"Eléctrico", Diesel:"Diésel"};
+  const trans = t => { t=val(t); if(!t) return ""; if(/CVT/i.test(t)) return "CVT"; if(/Automatic/i.test(t)) return "Automática"; if(/Manual/i.test(t)) return "Manual"; return t; };
+  const drive = d => { d=val(d); return d ? d.split("/")[0] : ""; };
+  const r = [];
+  const add = (k,x)=>{ const s=val(x); if(s) r.push([k,s]); };
+  add("Puertas", n.Doors);
+  add("Plazas", n.Seats);
+  if(val(n.EngineHP)) r.push(["Potencia", val(n.EngineHP)+" hp"]);
+  if(val(n.DisplacementL)) r.push(["Cilindrada", val(n.DisplacementL)+" L"]);
+  add("Cilindros", n.EngineCylinders);
+  if(val(n.FuelTypePrimary)) r.push(["Combustible", fuel[val(n.FuelTypePrimary)]||val(n.FuelTypePrimary)]);
+  if(trans(n.TransmissionStyle)) r.push(["Transmisión", trans(n.TransmissionStyle)]);
+  if(drive(n.DriveType)) r.push(["Tracción", drive(n.DriveType)]);
+  if(/yes/i.test(val(n.Turbo))) r.push(["Turbo", "Sí"]);
+  if(val(n.TopSpeedMPH)) r.push(["Vel. máx", val(n.TopSpeedMPH)+" mph"]);
+  return r;
+}
+
 function render(v){
   if(!v || v.estimated_price==null){ return error("No hemos podido calcular el valor de este vehículo."); }
-  const c=condition(v.price_kind);
   const rows=[];
   if(v.trim) rows.push(["Versión", v.trim]);
   if(v.body_class) rows.push(["Carrocería", v.body_class]);
+  rows.push(...nhtsaSpecs(v));  // engine + body specs from NHTSA (VIN lookups)
   if(v.vin) rows.push(["VIN", v.vin]);
-  if(rows.length) rows.push(["Moneda", v.currency]);  // only when other specs exist
   const specs = rows.length ? `<div class="specs">${rows.map(r=>specRow(r[0],r[1])).join("")}</div>` : "";
   out.innerHTML=`<div class="vcard fade">
     <div class="vhead">
@@ -179,14 +212,12 @@ function render(v){
         <div class="name">${[v.year,v.make,v.model].filter(Boolean).join(" ")}</div>
         <div class="sub">Valoración de mercado</div>
       </div>
-      ${c.label?`<div class="cond ${c.cls}">${c.label}</div>`:""}
     </div>
     <div class="vbody">
-      <div class="plabel">${c.plabel}</div>
-      <div class="price">${money(v.estimated_price)}</div>
+      ${priceBlocks(v)}
       ${rangeBar(v.price_low, v.price_high, v.estimated_price)}
       ${specs}
-      <div class="vfoot">Datos de mercado de <a href="${v.source_url||'#'}" target="_blank">Edmunds</a> · decodificación NHTSA</div>
+      <div class="vfoot">Datos de mercado de <a href="${v.source_url||'#'}" target="_blank">${v.source_name || 'la fuente'}</a> · decodificación NHTSA</div>
     </div>
   </div>`;
 }

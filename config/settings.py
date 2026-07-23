@@ -159,6 +159,16 @@ SCRAPER_NODRIVER_RETRIES = env.int("SCRAPER_NODRIVER_RETRIES", default=3)
 # Seconds to wait after navigating, so the JS challenge settles.
 SCRAPER_NODRIVER_SETTLE = env.int("SCRAPER_NODRIVER_SETTLE", default=6)
 
+# Edmunds: overlay REAL market data from the /for-sale/ inventory page (min from
+# actual listings + "Average price"). Adds a 2nd page fetch per model; set False
+# to use only the MSRP page. MIN_LISTINGS guards against thin/blocked inventory.
+SCRAPER_EDMUNDS_USE_INVENTORY = env.bool("SCRAPER_EDMUNDS_USE_INVENTORY", default=True)
+SCRAPER_EDMUNDS_MIN_LISTINGS = env.int("SCRAPER_EDMUNDS_MIN_LISTINGS", default=5)
+# Also fetch the descending (dearest-first) inventory page for the real maximum.
+# True = 2 inventory requests (real min AND max); False = 1 (ascending only,
+# uses the MSRP top for the maximum). More requests = higher block risk.
+SCRAPER_EDMUNDS_INVENTORY_BOTH_ENDS = env.bool("SCRAPER_EDMUNDS_INVENTORY_BOTH_ENDS", default=True)
+
 # Timeout for NHTSA VIN decoding.
 SCRAPER_VIN_DECODE_TIMEOUT = env.int("SCRAPER_VIN_DECODE_TIMEOUT", default=15)
 # Hours a market data row (VehicleModel) is considered fresh before requeueing

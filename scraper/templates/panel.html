@@ -46,12 +46,21 @@
     button.go { background:var(--acc); color:#04222f; border:none; font-weight:700;
       border-radius:9px; padding:0 20px; cursor:pointer; font-size:15px; }
     button.go:hover { filter:brightness(1.08); }
+    button.go.rescrape { background:transparent; border:1px solid var(--acc); color:var(--acc); }
+    button.go.rescrape:hover { background:rgba(56,189,248,.12); filter:none; }
     .hint { color:var(--mut); font-size:12.5px; margin-top:8px; }
     .result { margin-top:16px; }
     .result .head { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
     .result .title { font-size:20px; font-weight:700; }
-    .price { font-size:40px; font-weight:800; color:var(--ok); font-variant-numeric:tabular-nums; }
-    .range { color:var(--mut); font-size:14px; margin-top:2px; }
+    .prices { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin:6px 0 4px; }
+    .prices.one { grid-template-columns:1fr; }
+    .pblock { background:var(--card2); border:1px solid var(--line); border-radius:11px;
+      padding:12px 10px; text-align:center; }
+    .pblock.main { border-color:rgba(52,211,153,.5); background:#10241f; }
+    .pcap { font-size:11px; text-transform:uppercase; letter-spacing:.4px; color:var(--mut); margin-bottom:6px; }
+    .pval { font-size:20px; font-weight:800; font-variant-numeric:tabular-nums; }
+    .pblock.main .pval { font-size:30px; color:var(--ok); }
+    @media (max-width:520px){ .prices { grid-template-columns:1fr; } }
     .badge { font-size:11px; padding:3px 9px; border-radius:999px;
       border:1px solid var(--line); color:var(--mut); }
     .badge.ready { color:var(--ok); border-color:var(--ok); }
@@ -116,6 +125,7 @@
             <input class="grow" id="vin" placeholder="VIN (17 caracteres)" maxlength="17"
                    value="1HGCV1F13KA000000">
             <button class="go" onclick="lookupVin()">Buscar</button>
+            <button class="go rescrape" onclick="rescrapeVin()" title="Fuerza un scrape nuevo, ignora el caché y guarda el resultado">Reescrapear</button>
           </div>
           <div class="hint">Decodifica el VIN con NHTSA y busca el precio de mercado del modelo.</div>
         </div>
@@ -126,6 +136,7 @@
             <input class="grow" id="mo" placeholder="Modelo" value="CX-5">
             <input id="yr" placeholder="Año" value="2026" style="width:90px">
             <button class="go" onclick="lookupModel()">Buscar</button>
+            <button class="go rescrape" onclick="rescrapeModel()" title="Fuerza un scrape nuevo, ignora el caché y guarda el resultado">Reescrapear</button>
           </div>
           <div class="hint">Busca directamente por modelo (ideal para coches nuevos).</div>
         </div>
@@ -173,7 +184,7 @@
       <div class="card">
         <h2>Últimos resueltos</h2>
         <table>
-          <thead><tr><th>Vehículo</th><th>Tipo</th><th style="text-align:right">Precio</th></tr></thead>
+          <thead><tr><th>Vehículo</th><th>Fuente</th><th style="text-align:right">Precio</th></tr></thead>
           <tbody id="recent"><tr><td colspan="3" class="muted">—</td></tr></tbody>
         </table>
       </div>
@@ -201,27 +212,87 @@ function setTab(which) {
   document.getElementById("modelBox").style.display = vin ? "none" : "";
 }
 
+// Technical specs decoded from the VIN via NHTSA (present only for VIN lookups).
+function nhtsaSpecs(v){
+  const n = v && v.raw_data && v.raw_data.nhtsa;
+  if(!n) return [];
+  const val = x => { const s=(x==null?"":String(x)).trim(); return (s===""||s==="0") ? "" : s; };
+  const fuel = {Gasoline:"Gasolina", Electric:"Eléctrico", Diesel:"Diésel"};
+  const trans = t => { t=val(t); if(!t) return ""; if(/CVT/i.test(t)) return "CVT"; if(/Automatic/i.test(t)) return "Automática"; if(/Manual/i.test(t)) return "Manual"; return t; };
+  const drive = d => { d=val(d); return d ? d.split("/")[0] : ""; };
+  const r = [];
+  const add = (k,x)=>{ const s=val(x); if(s) r.push([k,s]); };
+  add("Puertas", n.Doors);
+  add("Plazas", n.Seats);
+  if(val(n.EngineHP)) r.push(["Potencia", val(n.EngineHP)+" hp"]);
+  if(val(n.DisplacementL)) r.push(["Cilindrada", val(n.DisplacementL)+" L"]);
+  add("Cilindros", n.EngineCylinders);
+  if(val(n.FuelTypePrimary)) r.push(["Combustible", fuel[val(n.FuelTypePrimary)]||val(n.FuelTypePrimary)]);
+  if(trans(n.TransmissionStyle)) r.push(["Transmisión", trans(n.TransmissionStyle)]);
+  if(drive(n.DriveType)) r.push(["Tracción", drive(n.DriveType)]);
+  if(/yes/i.test(val(n.Turbo))) r.push(["Turbo", "Sí"]);
+  if(val(n.TopSpeedMPH)) r.push(["Vel. máx", val(n.TopSpeedMPH)+" mph"]);
+  return r;
+}
+
 function renderVehicle(v, state) {
   if (!v) return `<div class="muted">Sin datos aún.</div>`;
   const stateBadge = state === "ready"
     ? `<span class="badge ready">listo</span>`
     : `<span class="badge proc"><span class="spin"></span> procesando</span>`;
-  const kind = v.price_kind ? `<span class="badge kind">${v.price_kind}</span>` : "";
-  const range = (v.price_low || v.price_high)
-    ? `Rango ${fmt(v.price_low)} – ${fmt(v.price_high)}` : "";
+  const est = `<div class="pblock main"><div class="pcap">Precio Sugerido</div>` +
+    `<div class="pval">${fmt(v.estimated_price)}</div></div>`;
+  const prices = (v.price_low != null && v.price_high != null)
+    ? `<div class="prices">
+        <div class="pblock"><div class="pcap">Precio Mínimo</div><div class="pval">${fmt(v.price_low)}</div></div>
+        ${est}
+        <div class="pblock"><div class="pcap">Precio Máximo</div><div class="pval">${fmt(v.price_high)}</div></div>
+      </div>`
+    : `<div class="prices one">${est}</div>`;
   return `
     <div class="head">
       <span class="title">${[v.year, v.make, v.model].filter(Boolean).join(" ")}</span>
-      ${stateBadge} ${kind}
+      ${stateBadge}
     </div>
-    <div class="price">${fmt(v.estimated_price)}</div>
-    <div class="range">${range}</div>
+    ${prices}
     <div class="meta">
       ${v.vin ? `<div class="k">VIN</div><div>${v.vin}</div>` : ""}
       ${v.trim ? `<div class="k">Versión</div><div>${v.trim}</div>` : ""}
       ${v.body_class ? `<div class="k">Carrocería</div><div>${v.body_class}</div>` : ""}
+      ${nhtsaSpecs(v).map(s => `<div class="k">${s[0]}</div><div>${s[1]}</div>`).join("")}
       ${v.source_name ? `<div class="k">Fuente</div><div>${v.source_url ? `<a href="${v.source_url}" target="_blank">${v.source_name}</a>` : v.source_name}</div>` : ""}
     </div>`;
+}
+
+function processingBox(label) {
+  return `<div style="text-align:center; padding:26px 16px; background:var(--card2);
+      border:1px solid var(--line); border-radius:12px; margin-top:4px;">
+    <div class="spin" style="width:28px; height:28px; margin:0 auto 14px"></div>
+    <div style="font-size:16px; font-weight:700">Procesando…</div>
+    <div class="muted" style="font-size:13px; margin-top:6px">
+      Buscando el precio de <b style="color:var(--tx)">${label || "el vehículo"}</b> ·
+      consultando la web, puede tardar unos segundos.</div>
+    <div id="procSource" style="font-size:13px; margin-top:10px; min-height:18px"></div>
+  </div>`;
+}
+
+// Live sub-line while processing: which source, and whether Edmunds blocked.
+async function updateProcSource(label) {
+  try {
+    const w = (await api("/worker/")).data;
+    const el = document.getElementById("procSource");
+    if (!el) return;
+    const a = w.activity;
+    if (w.cooling_down) {
+      el.innerHTML = w.block_phase === "rotating"
+        ? `<span style="color:#fbbf24">🔄 Fuente bloqueada — reintentando con sesión nueva…</span>`
+        : `<span style="color:#f87171">⏳ Fuente bloqueada — esperando a que se desbloquee…</span>`;
+    } else if (a && a.label && a.label.toLowerCase() === (label || "").toLowerCase()) {
+      el.innerHTML = a.after_block
+        ? `<span style="color:#fbbf24">⚠️ Edmunds bloqueó — buscando en <b>${a.source}</b>…</span>`
+        : `<span class="muted">Consultando <b style="color:var(--tx)">${a.source}</b>…</span>`;
+    }
+  } catch (e) {}
 }
 
 let pollTimer = null;
@@ -232,28 +303,111 @@ async function lookupVin() {
   box.innerHTML = `<div class="muted"><span class="spin"></span> Buscando…</div>`;
   const { status, data } = await api("/vehicles/lookup/", "POST", { vin });
   if (status === 400) { box.innerHTML = `<div class="badge proc">${data.detail || "VIN inválido"}</div>`; return; }
-  box.innerHTML = renderVehicle(data.vehicle, data.status);
-  if (data.status === "processing") {
+  if (data.status !== "processing") { box.innerHTML = renderVehicle(data.vehicle, data.status); return; }
+  {
+    const v0 = data.vehicle || {};
+    const procLabel = [v0.year, v0.make, v0.model].filter(Boolean).join(" ") || vin;
+    box.innerHTML = processingBox(procLabel);
+    updateProcSource(procLabel);
+    let tries = 0;
     pollTimer = setInterval(async () => {
+      tries++;
+      updateProcSource(procLabel);
       const s = await api(`/vehicles/${vin}/status/`);
-      const v = s.data.vehicle;
+      const v = s.data.vehicle, job = s.data.job;
       if (v && v.estimated_price != null) {
         clearInterval(pollTimer);
         box.innerHTML = renderVehicle(v, "ready");
         loadRecent();
+        return;
+      }
+      if ((job && job.status === "failed") || tries > 40) {
+        clearInterval(pollTimer);
+        box.innerHTML = `<div class="badge proc">No se pudo obtener el precio (la fuente no está disponible ahora).</div>`;
       }
     }, 3000);
   }
 }
 
 async function lookupModel() {
+  clearInterval(pollTimer);
   const mk = document.getElementById("mk").value.trim();
   const mo = document.getElementById("mo").value.trim();
   const yr = parseInt(document.getElementById("yr").value) || null;
   const box = document.getElementById("result");
   box.innerHTML = `<div class="muted"><span class="spin"></span> Buscando…</div>`;
   const { data } = await api("/models/lookup/", "POST", { make: mk, model: mo, year: yr });
-  box.innerHTML = renderVehicle(data.model_data, data.status);
+  if (data.status !== "processing") { box.innerHTML = renderVehicle(data.model_data, data.status); return; }
+  {
+    const procLabel = [yr, mk, mo].filter(Boolean).join(" ");
+    box.innerHTML = processingBox(procLabel);
+    updateProcSource(procLabel);
+    let tries = 0;
+    pollTimer = setInterval(async () => {
+      tries++;
+      updateProcSource(procLabel);
+      const { data: d } = await api("/models/lookup/", "POST", { make: mk, model: mo, year: yr });
+      if (d.status === "ready") {
+        clearInterval(pollTimer);
+        box.innerHTML = renderVehicle(d.model_data, "ready");
+        loadRecent();
+        return;
+      }
+      if (tries > 30) {
+        clearInterval(pollTimer);
+        box.innerHTML = `<div class="badge proc">No se pudo obtener el precio (la fuente no está disponible ahora).</div>`;
+      }
+    }, 4000);
+  }
+}
+
+// --- Re-scrape (force): ignore the cache, scrape fresh, save & show the new result ---
+// Polls the ENQUEUED job (not the vehicle/model), so it waits for the fresh scrape
+// instead of instantly returning the previously cached value.
+function waitForJob(jobId, label, onDone, onFail) {
+  if (!jobId) { onFail("No se pudo encolar el re-scrape (¿worker parado?)."); return; }
+  let tries = 0;
+  pollTimer = setInterval(async () => {
+    tries++;
+    updateProcSource(label);
+    const { data } = await api(`/jobs/${jobId}/`);
+    const st = data && data.status;
+    if (st === "done") { clearInterval(pollTimer); onDone(); return; }
+    if (st === "failed") { clearInterval(pollTimer); onFail(data.last_error || "el scrape falló"); return; }
+    if (tries > 60) { clearInterval(pollTimer); onFail("tiempo de espera agotado"); }
+  }, 3000);
+}
+
+async function rescrapeVin() {
+  clearInterval(pollTimer);
+  const vin = document.getElementById("vin").value.trim().toUpperCase();
+  const box = document.getElementById("result");
+  box.innerHTML = `<div class="muted"><span class="spin"></span> Reescrapeando (ignora caché)…</div>`;
+  const { status, data } = await api("/vehicles/lookup/", "POST", { vin, force: true });
+  if (status === 400) { box.innerHTML = `<div class="badge proc">${data.detail || "VIN inválido"}</div>`; return; }
+  const v0 = data.vehicle || {};
+  const label = [v0.year, v0.make, v0.model].filter(Boolean).join(" ") || vin;
+  box.innerHTML = processingBox(label);
+  updateProcSource(label);
+  waitForJob(data.job_id, label,
+    async () => { const r = await api("/vehicles/lookup/", "POST", { vin }); box.innerHTML = renderVehicle(r.data.vehicle, "ready"); loadRecent(); },
+    (msg) => { box.innerHTML = `<div class="badge proc">No se pudo reescrapear: ${msg}.</div>`; });
+}
+
+async function rescrapeModel() {
+  clearInterval(pollTimer);
+  const mk = document.getElementById("mk").value.trim();
+  const mo = document.getElementById("mo").value.trim();
+  const yr = parseInt(document.getElementById("yr").value) || null;
+  const box = document.getElementById("result");
+  box.innerHTML = `<div class="muted"><span class="spin"></span> Reescrapeando (ignora caché)…</div>`;
+  const { data } = await api("/models/lookup/", "POST", { make: mk, model: mo, year: yr, force: true });
+  const label = [yr, mk, mo].filter(Boolean).join(" ");
+  box.innerHTML = processingBox(label);
+  updateProcSource(label);
+  waitForJob(data.job_id, label,
+    async () => { const r = await api("/models/lookup/", "POST", { make: mk, model: mo, year: yr }); box.innerHTML = renderVehicle(r.data.model_data, "ready"); loadRecent(); },
+    (msg) => { box.innerHTML = `<div class="badge proc">No se pudo reescrapear: ${msg}.</div>`; });
 }
 
 async function refreshStatus() {
@@ -321,7 +475,7 @@ async function loadRecent() {
       ? rows.map(v => `<tr>
           <td>${[v.year, v.make, v.model].filter(Boolean).join(" ")}<br>
               <span class="muted" style="font-size:11px">${v.vin || ""}</span></td>
-          <td class="muted">${v.price_kind || "—"}</td>
+          <td class="muted">${v.source_name || "—"}</td>
           <td class="num">${fmt(v.estimated_price)}</td></tr>`).join("")
       : `<tr><td colspan="3" class="muted">Aún no hay vehículos.</td></tr>`;
   } catch (e) {}

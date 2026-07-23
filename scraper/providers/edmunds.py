@@ -11,16 +11,20 @@ with a real Chrome via `NodriverFetchMixin`. Two entry points:
 from __future__ import annotations
 
 import json
+import logging
 import re
 from decimal import Decimal, InvalidOperation
 from statistics import median
 
 from bs4 import BeautifulSoup
+from django.conf import settings
 
-from .base import ScrapedVehicle, VehicleNotFound, parse_price
+from .base import BlockedError, ScrapedVehicle, ScraperError, VehicleNotFound, parse_price
 from .generic import GenericProvider
 from .nodriver_fetch import NodriverFetchMixin
 from .registry import register
+
+logger = logging.getLogger(__name__)
 
 # Plausible car price range (USD) to filter out noise when aggregating.
 _PRICE_MIN = 1000
@@ -29,6 +33,39 @@ _PRICE_RE = re.compile(r"\$\s?(\d{1,3}(?:,\d{3})+)")
 # Edmunds' own labeled values: "Edmunds suggests you pay $X" and a "$X - $Y" range.
 _SUGGEST_RE = re.compile(r"suggests?\s+you\s+pay[^$]{0,25}\$([\d,]{4,})", re.I)
 _RANGE_RE = re.compile(r"\$([\d,]{4,})\s*[-–—]\s*\$([\d,]{4,})")
+# Edmunds' own labeled MSRP span across trims: "Price Range: $X - $Y". This is
+# the authoritative range; anchoring to the label avoids catching a savings /
+# lease / payment figure elsewhere on the page.
+_PRICERANGE_RE = re.compile(
+    r"price\s+range\s*:?\s*\$([\d,]{4,})\s*[-–—]\s*\$([\d,]{4,})", re.I
+)
+# Marketing text that reuses the price CSS class (.heading-3) but is NOT a car
+# price, e.g. "Save as much as $2,544 with Edmunds".
+_NON_PRICE_RE = re.compile(r"save\s+as\s+much\s+as|with\s+edmunds", re.I)
+# Edmunds inventory (/for-sale/) page: its own market "Average price: $X", plus
+# the non-listing money to strip before reading listing prices ("$X below/above
+# market" price ratings and "$X starting" MSRP ads for other years).
+_AVG_PRICE_RE = re.compile(r"average\s+price\s*:?\s*\$([\d,]{4,})", re.I)
+_INVENTORY_NOISE_RE = re.compile(
+    r"\$\s?[\d,]{3,}\s*(?:below|above)\s*market"
+    r"|\$\s?[\d,]{3,}\s*starting\b"
+    r"|average\s+price\s*:?\s*\$[\d,]{4,}",
+    re.I,
+)
+# Each listing card exposes its price AND model year in the "save favorite"
+# aria-label ("Click to save favorite $25,038 2025 Honda HR-V Sport 4dr SUV", or
+# "... $39,270 Certified 2026 Mazda CX-5 ..."): one entry per real listing. Group
+# 2 holds the text right after the price, from which the year is read.
+_LISTING_ARIA_RE = re.compile(r"save\s+favorite\s+\$([\d,]{4,})([^\"]{0,60})", re.I)
+_LISTING_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+
+
+def trim_regex(trim: str):
+    """Word-boundary matcher for a trim within a listing title, tolerant of the
+    hyphen/space difference: NHTSA writes "EX-V6" while the sites write "EX V6",
+    so a hyphen matches hyphen-or-space."""
+    pattern = re.escape((trim or "").strip()).replace(r"\-", r"[\s\-]")
+    return re.compile(r"\b" + pattern + r"\b", re.I)
 
 
 @register("edmunds")
@@ -57,11 +94,162 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
             if result.estimated_price is not None:
                 if not result.source_url:
                     result.source_url = self.source.build_model_url(make, candidate, year, trim)
+                self._enrich_with_market(result, make, candidate, year, trim)
                 return result
         raise VehicleNotFound(
             f"{self.source.name}: no price for {make} {model} {year} "
             f"(tried: {', '.join(candidates)})."
         )
+
+    def _enrich_with_market(
+        self, result, make: str, model: str, year=None, trim: str = ""
+    ) -> None:
+        """Merge REAL market data from Edmunds' /for-sale/ inventory page.
+
+        Two layers, combined (not replaced):
+          1. The MODEL page (already in `result`) gives the initial bounds: the
+             "suggests you pay" recommendation and the MSRP lower/upper limits.
+          2. The /for-sale/ page gives a real min and max from the listings.
+
+        The final range is widened to cover both:
+          * price_low  = min(MSRP low, listing min)
+          * price_high = max(MSRP high, listing max)
+          * estimated  = the model page's "suggests you pay"; if the model page
+                         did not provide one, the inventory "Average price"; and
+                         if neither, the median of the listings.
+
+        Best-effort: if the inventory page is blocked or has too few listings, the
+        MSRP-based result is kept unchanged (no regression).
+        """
+        if not getattr(settings, "SCRAPER_EDMUNDS_USE_INVENTORY", True):
+            return
+        try:
+            prices, average = self._scrape_inventory(make, model, year, trim=trim)
+        except (BlockedError, ScraperError, VehicleNotFound):
+            return  # inventory unavailable — keep the MSRP-based result
+        except Exception:  # noqa: BLE001 — enrichment must never break the scrape
+            logger.exception("Inventory enrichment failed for %s %s %s", year, make, model)
+            return
+
+        if len(prices) < getattr(settings, "SCRAPER_EDMUNDS_MIN_LISTINGS", 5):
+            return  # not enough real listings to trust the market data
+
+        # Layer 1: initial bounds + recommendation from the model page.
+        model_estimate = result.estimated_price
+        model_kind = result.price_kind
+        msrp_low, msrp_high = result.price_low, result.price_high
+
+        # Layer 2: real min/median/max from the /for-sale/ listings.
+        market_median, market_low, market_high = self._robust_listing_stats(prices)
+
+        # Merge: widen the range to cover both the sticker bounds and real cars.
+        lows = [x for x in (msrp_low, market_low) if x is not None]
+        highs = [x for x in (msrp_high, market_high) if x is not None]
+        result.price_low = min(lows)
+        result.price_high = max(highs)
+        # Recommendation: keep the model page's own figure — "suggests you pay"
+        # (new cars) or its representative listing median (used cars). The sorted
+        # inventory median is bimodal (only the cheapest + dearest ends), so it is
+        # a poor centre; only use the inventory average/median when the model page
+        # produced a synthetic value (a plain MSRP-range midpoint).
+        if model_kind in ("edmunds_suggested", "used_listings_median"):
+            result.estimated_price = model_estimate
+        else:
+            result.estimated_price = average or market_median
+        result.price_kind = "edmunds_market"
+        result.source_url = self._inventory_url(make, model, year, trim=trim)
+        result.raw_data = {
+            **(result.raw_data or {}),
+            "market_listings": len(prices),
+            "average_price": float(average) if average is not None else None,
+            "market_low": float(market_low),
+            "market_high": float(market_high),
+            "market_median": float(market_median),
+            "msrp_low": float(msrp_low) if msrp_low is not None else None,
+            "msrp_high": float(msrp_high) if msrp_high is not None else None,
+            "suggested": float(model_estimate) if model_kind == "edmunds_suggested" else None,
+        }
+
+    def _inventory_url(
+        self, make: str, model: str, year=None, sort: str | None = None, trim: str = ""
+    ) -> str:
+        """URL of the model's /for-sale/ inventory page.
+
+        IMPORTANT: year (and trim) MUST go in query params, NOT the path. Adding
+        `?sort=` to the path form (/make/model/YEAR/for-sale/) makes Edmunds drop
+        the year filter and return ALL model years. The query-param form keeps the
+        filters while sorting. `trim=<model-slug>|<trim-slug>` narrows to the exact
+        trim (e.g. only "Sport", not every HR-V trim) — used for VIN searches.
+        `radius` widens the search so the true cheapest/dearest listings appear.
+        """
+        base = self.source.build_model_url(make, model).rstrip("/") + "/for-sale/"
+        params = []
+        if year:
+            params.append(f"year={year}-{year}")
+        if trim:
+            model_slug = "-".join(str(model).strip().lower().split())
+            trim_slug = "-".join(str(trim).strip().lower().split())
+            params.append(f"trim={model_slug}%7C{trim_slug}")
+        if sort:
+            params.append("sort=" + sort.replace(":", "%3A"))
+        params.append("radius=6000")
+        return f"{base}?{'&'.join(params)}"
+
+    def _scrape_inventory(self, make: str, model: str, year=None, trim: str = ""):
+        """Fetch the /for-sale/ inventory and return (listing_prices, average).
+
+        Edmunds serves a price-sorted page server-side, so we read the real market
+        floor from the ascending page ("price:asc", cheapest first) and — unless
+        disabled — the ceiling from the descending page ("price:desc"), and combine
+        them. This captures the true min and max without paginating the whole list.
+        When `trim` is given (VIN searches) the results are narrowed to that trim.
+        Best-effort: stop if a page blocks and use whatever was gathered.
+
+        Prices come from each card's "save favorite" aria-label (one clean price
+        per real car); a text fallback is used only if those are absent.
+        """
+        sorts = ["price:asc"]
+        if getattr(settings, "SCRAPER_EDMUNDS_INVENTORY_BOTH_ENDS", True):
+            sorts.append("price:desc")
+        all_prices: list[Decimal] = []
+        average = None
+        trim_re = trim_regex(trim) if trim else None
+        for sort in sorts:
+            try:
+                resp = self._fetch_url(
+                    self._inventory_url(make, model, year, sort=sort, trim=trim),
+                    f"{year} {make} {model} {trim} inventory {sort}".replace("  ", " "),
+                )
+            except (BlockedError, VehicleNotFound, ScraperError):
+                break  # use whatever we already gathered
+            html = resp.text
+            text = BeautifulSoup(html, "lxml").get_text(" ", strip=True)
+            if average is None:
+                am = _AVG_PRICE_RE.search(text)
+                if am:
+                    average = self._num(am.group(1))
+            page_prices = []
+            for m in _LISTING_ARIA_RE.finditer(html):
+                price = self._num(m.group(1))
+                if price is None:
+                    continue
+                chunk = m.group(2) or ""
+                if year is not None:  # drop any listing of a different model year
+                    ym = _LISTING_YEAR_RE.search(chunk)
+                    if ym and int(ym.group(0)) != year:
+                        continue
+                if trim_re is not None and not trim_re.search(chunk):
+                    continue  # drop any listing of a different trim (VIN searches)
+                page_prices.append(price)
+            if not page_prices and not trim:
+                # Fallback (older layout): read from text after stripping ads/deltas.
+                # Skipped for trim searches (the text has no reliable per-trim info).
+                clean = _INVENTORY_NOISE_RE.sub("  ", text)
+                page_prices = [
+                    p for m in _PRICE_RE.finditer(clean) if (p := self._num(m.group(1))) is not None
+                ]
+            all_prices.extend(page_prices)
+        return all_prices, average
 
     @staticmethod
     def _model_candidates(make: str, model: str, series: str = "") -> list[str]:
@@ -109,48 +297,80 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
         """Extract the model/year market price using Edmunds' own numbers.
 
         Priority:
-          1. "Edmunds suggests you pay $X" (new cars) -> headline price.
-          2. A "$X - $Y" range (MSRP range for new cars) -> midpoint as headline.
+          1. Edmunds' labeled "Price Range: $X - $Y" (MSRP span across trims) ->
+             the min/max; the estimate is "suggests you pay" when it falls inside
+             that span, otherwise the range midpoint.
+          2. "Edmunds suggests you pay $X" with a sanity-checked generic range.
           3. Median of the used listings (`.heading-3`, configurable via
              selectors['model_price_nodes']) -> headline for used cars.
 
-        `price_low`/`price_high` hold the range (explicit if present, otherwise
-        the listing spread) and `price_kind` records the provenance.
+        The range is read from Edmunds' OWN labeled span rather than any "$X - $Y"
+        on the page, so a savings/lease/payment figure can't pollute it.
+        `price_kind` records the provenance.
         """
         soup = BeautifulSoup(response.text, "lxml")
         selectors = self.source.selectors or {}
         text = soup.get_text(" ", strip=True)
 
+        # Edmunds' "suggests you pay $X" target price (new cars).
         suggested = None
         m = _SUGGEST_RE.search(text)
         if m:
             suggested = self._num(m.group(1))
 
+        # Edmunds' OWN labeled "Price Range: $X - $Y" (authoritative MSRP span).
+        labeled_range = None
+        lm = _PRICERANGE_RE.search(text)
+        if lm:
+            lo, hi = self._num(lm.group(1)), self._num(lm.group(2))
+            if lo is not None and hi is not None and lo <= hi:
+                labeled_range = (lo, hi)
+
+        # Generic $X-$Y ranges anywhere on the page (noisy; fallback only).
         candidate_ranges: list[tuple[Decimal, Decimal]] = []
         for rm in _RANGE_RE.finditer(text):
             lo, hi = self._num(rm.group(1)), self._num(rm.group(2))
             if lo is not None and hi is not None and lo <= hi:
                 candidate_ranges.append((lo, hi))
 
+        # Used-car listing prices. Skip marketing nodes ("Save as much as $X with
+        # Edmunds") that share the .heading-3 class but are not car prices.
         selector = selectors.get("model_price_nodes", ".heading-3")
         prices: list[Decimal] = []
         for node in soup.select(selector):
-            price = self._valid_price(node.get_text(" ", strip=True))
+            node_text = node.get_text(" ", strip=True)
+            if _NON_PRICE_RE.search(node_text):
+                continue
+            price = self._valid_price(node_text)
             if price is not None:
                 prices.append(price)
         listing_median = listing_low = listing_high = None
         if prices:
             listing_median, listing_low, listing_high = self._robust_listing_stats(prices)
 
+        msrp_ranges = [
+            (lo, hi) for lo, hi in candidate_ranges if hi <= lo * Decimal("2.5")
+        ]
+
         # Pick the headline price, its range and provenance.
         low = high = None
-        if suggested is not None:
+        if labeled_range is not None:
+            low, high = labeled_range
+            if suggested is not None:
+                # Headline Edmunds' realistic "suggests you pay" price, and extend
+                # the MSRP span to contain it: the target price can sit just below
+                # the span, in which case it becomes the minimum (or vice versa).
+                estimated, kind = suggested, "edmunds_suggested"
+                low, high = min(low, suggested), max(high, suggested)
+            else:
+                estimated, kind = Decimal(round((low + high) / 2)), "msrp_range_mid"
+        elif suggested is not None:
             estimated, kind = suggested, "edmunds_suggested"
-            # Only keep a range consistent with the suggested price (avoids
-            # picking up stray "$1,140 - ..." monthly-payment/fee ranges).
+            # No labeled span: only keep a generic range consistent with the
+            # suggested price (rejects stray payment/fee/"due at signing" figures).
             low, high = self._pick_range(candidate_ranges, suggested)
-        elif candidate_ranges:
-            low, high = candidate_ranges[0]
+        elif msrp_ranges:
+            low, high = msrp_ranges[0]
             estimated, kind = Decimal(round((low + high) / 2)), "msrp_range_mid"
         elif listing_median is not None:
             estimated, kind = listing_median, "used_listings_median"
@@ -183,16 +403,22 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
     def _pick_range(
         ranges: list[tuple[Decimal, Decimal]], reference: Decimal
     ) -> tuple[Decimal | None, Decimal | None]:
-        """Choose the range consistent with the reference (suggested) price.
+        """Choose an MSRP-like range consistent with the reference (suggested) price.
 
-        Prefers a range that contains the reference; otherwise a plausible
-        MSRP-like one near it. Rejects bogus ranges (e.g. a low monthly payment).
+        Only accepts ranges whose bounds sit in a sane band around the reference,
+        so stray figures on the page (a lease "due at signing", a savings amount,
+        a monthly payment) can't become the range. E.g. a "$2,544 - $30,000" span
+        on a ~$26k new car is rejected because its low is far below the suggested
+        price. Prefers a range that brackets the reference.
         """
-        for lo, hi in ranges:
+        lo_floor = reference * Decimal("0.55")
+        hi_ceil = reference * Decimal("2.5")
+        sane = [(lo, hi) for lo, hi in ranges if lo >= lo_floor and hi <= hi_ceil]
+        for lo, hi in sane:  # prefer a range that brackets the reference
             if lo <= reference <= hi:
                 return lo, hi
-        for lo, hi in ranges:
-            if lo >= reference * Decimal("0.5") and hi >= reference:
+        for lo, hi in sane:  # otherwise the first sane range reaching it
+            if hi >= reference:
                 return lo, hi
         return None, None
 

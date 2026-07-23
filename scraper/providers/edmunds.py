@@ -11,16 +11,20 @@ with a real Chrome via `NodriverFetchMixin`. Two entry points:
 from __future__ import annotations
 
 import json
+import logging
 import re
 from decimal import Decimal, InvalidOperation
 from statistics import median
 
 from bs4 import BeautifulSoup
+from django.conf import settings
 
-from .base import ScrapedVehicle, VehicleNotFound, parse_price
+from .base import BlockedError, ScrapedVehicle, ScraperError, VehicleNotFound, parse_price
 from .generic import GenericProvider
 from .nodriver_fetch import NodriverFetchMixin
 from .registry import register
+
+logger = logging.getLogger(__name__)
 
 # Plausible car price range (USD) to filter out noise when aggregating.
 _PRICE_MIN = 1000
@@ -38,6 +42,22 @@ _PRICERANGE_RE = re.compile(
 # Marketing text that reuses the price CSS class (.heading-3) but is NOT a car
 # price, e.g. "Save as much as $2,544 with Edmunds".
 _NON_PRICE_RE = re.compile(r"save\s+as\s+much\s+as|with\s+edmunds", re.I)
+# Edmunds inventory (/for-sale/) page: its own market "Average price: $X", plus
+# the non-listing money to strip before reading listing prices ("$X below/above
+# market" price ratings and "$X starting" MSRP ads for other years).
+_AVG_PRICE_RE = re.compile(r"average\s+price\s*:?\s*\$([\d,]{4,})", re.I)
+_INVENTORY_NOISE_RE = re.compile(
+    r"\$\s?[\d,]{3,}\s*(?:below|above)\s*market"
+    r"|\$\s?[\d,]{3,}\s*starting\b"
+    r"|average\s+price\s*:?\s*\$[\d,]{4,}",
+    re.I,
+)
+# Each listing card exposes its price AND model year in the "save favorite"
+# aria-label ("Click to save favorite $25,038 2025 Honda HR-V Sport 4dr SUV", or
+# "... $39,270 Certified 2026 Mazda CX-5 ..."): one entry per real listing. Group
+# 2 holds the text right after the price, from which the year is read.
+_LISTING_ARIA_RE = re.compile(r"save\s+favorite\s+\$([\d,]{4,})([^\"]{0,30})", re.I)
+_LISTING_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
 
 
 @register("edmunds")
@@ -66,11 +86,148 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
             if result.estimated_price is not None:
                 if not result.source_url:
                     result.source_url = self.source.build_model_url(make, candidate, year, trim)
+                self._enrich_with_market(result, make, candidate, year)
                 return result
         raise VehicleNotFound(
             f"{self.source.name}: no price for {make} {model} {year} "
             f"(tried: {', '.join(candidates)})."
         )
+
+    def _enrich_with_market(self, result, make: str, model: str, year=None) -> None:
+        """Merge REAL market data from Edmunds' /for-sale/ inventory page.
+
+        Two layers, combined (not replaced):
+          1. The MODEL page (already in `result`) gives the initial bounds: the
+             "suggests you pay" recommendation and the MSRP lower/upper limits.
+          2. The /for-sale/ page gives a real min and max from the listings.
+
+        The final range is widened to cover both:
+          * price_low  = min(MSRP low, listing min)
+          * price_high = max(MSRP high, listing max)
+          * estimated  = the model page's "suggests you pay"; if the model page
+                         did not provide one, the inventory "Average price"; and
+                         if neither, the median of the listings.
+
+        Best-effort: if the inventory page is blocked or has too few listings, the
+        MSRP-based result is kept unchanged (no regression).
+        """
+        if not getattr(settings, "SCRAPER_EDMUNDS_USE_INVENTORY", True):
+            return
+        try:
+            prices, average = self._scrape_inventory(make, model, year)
+        except (BlockedError, ScraperError, VehicleNotFound):
+            return  # inventory unavailable — keep the MSRP-based result
+        except Exception:  # noqa: BLE001 — enrichment must never break the scrape
+            logger.exception("Inventory enrichment failed for %s %s %s", year, make, model)
+            return
+
+        if len(prices) < getattr(settings, "SCRAPER_EDMUNDS_MIN_LISTINGS", 5):
+            return  # not enough real listings to trust the market data
+
+        # Layer 1: initial bounds + recommendation from the model page.
+        model_estimate = result.estimated_price
+        model_kind = result.price_kind
+        msrp_low, msrp_high = result.price_low, result.price_high
+
+        # Layer 2: real min/median/max from the /for-sale/ listings.
+        market_median, market_low, market_high = self._robust_listing_stats(prices)
+
+        # Merge: widen the range to cover both the sticker bounds and real cars.
+        lows = [x for x in (msrp_low, market_low) if x is not None]
+        highs = [x for x in (msrp_high, market_high) if x is not None]
+        result.price_low = min(lows)
+        result.price_high = max(highs)
+        # Recommendation: keep the model page's own figure — "suggests you pay"
+        # (new cars) or its representative listing median (used cars). The sorted
+        # inventory median is bimodal (only the cheapest + dearest ends), so it is
+        # a poor centre; only use the inventory average/median when the model page
+        # produced a synthetic value (a plain MSRP-range midpoint).
+        if model_kind in ("edmunds_suggested", "used_listings_median"):
+            result.estimated_price = model_estimate
+        else:
+            result.estimated_price = average or market_median
+        result.price_kind = "edmunds_market"
+        result.source_url = self._inventory_url(make, model, year)
+        result.raw_data = {
+            **(result.raw_data or {}),
+            "market_listings": len(prices),
+            "average_price": float(average) if average is not None else None,
+            "market_low": float(market_low),
+            "market_high": float(market_high),
+            "market_median": float(market_median),
+            "msrp_low": float(msrp_low) if msrp_low is not None else None,
+            "msrp_high": float(msrp_high) if msrp_high is not None else None,
+            "suggested": float(model_estimate) if model_kind == "edmunds_suggested" else None,
+        }
+
+    def _inventory_url(self, make: str, model: str, year=None, sort: str | None = None) -> str:
+        """URL of the model's /for-sale/ inventory page.
+
+        IMPORTANT: the year MUST go in the `year=YYYY-YYYY` query param, NOT the
+        path. Adding `?sort=` to the path form (/make/model/YEAR/for-sale/) makes
+        Edmunds drop the year filter and return ALL model years — so a 2018 search
+        would surface 2013 and 2026 cars at the price extremes. The query-param
+        form keeps the year while sorting. `radius` widens the search so the true
+        cheapest/dearest listings appear.
+        """
+        base = self.source.build_model_url(make, model).rstrip("/") + "/for-sale/"
+        params = []
+        if year:
+            params.append(f"year={year}-{year}")
+        if sort:
+            params.append("sort=" + sort.replace(":", "%3A"))
+        params.append("radius=6000")
+        return f"{base}?{'&'.join(params)}"
+
+    def _scrape_inventory(self, make: str, model: str, year=None):
+        """Fetch the /for-sale/ inventory and return (listing_prices, average).
+
+        Edmunds serves a price-sorted page server-side, so we read the real market
+        floor from the ascending page ("price:asc", cheapest first) and — unless
+        disabled — the ceiling from the descending page ("price:desc"), and combine
+        them. This captures the true min and max without paginating the whole list.
+        Best-effort: stop if a page blocks and use whatever was gathered.
+
+        Prices come from each card's "save favorite" aria-label (one clean price
+        per real car); a text fallback is used only if those are absent.
+        """
+        sorts = ["price:asc"]
+        if getattr(settings, "SCRAPER_EDMUNDS_INVENTORY_BOTH_ENDS", True):
+            sorts.append("price:desc")
+        all_prices: list[Decimal] = []
+        average = None
+        for sort in sorts:
+            try:
+                resp = self._fetch_url(
+                    self._inventory_url(make, model, year, sort=sort),
+                    f"{year} {make} {model} inventory {sort}",
+                )
+            except (BlockedError, VehicleNotFound, ScraperError):
+                break  # use whatever we already gathered
+            html = resp.text
+            text = BeautifulSoup(html, "lxml").get_text(" ", strip=True)
+            if average is None:
+                am = _AVG_PRICE_RE.search(text)
+                if am:
+                    average = self._num(am.group(1))
+            page_prices = []
+            for m in _LISTING_ARIA_RE.finditer(html):
+                price = self._num(m.group(1))
+                if price is None:
+                    continue
+                if year is not None:  # drop any listing of a different model year
+                    ym = _LISTING_YEAR_RE.search(m.group(2) or "")
+                    if ym and int(ym.group(0)) != year:
+                        continue
+                page_prices.append(price)
+            if not page_prices:
+                # Fallback (older layout): read from text after stripping ads/deltas.
+                clean = _INVENTORY_NOISE_RE.sub("  ", text)
+                page_prices = [
+                    p for m in _PRICE_RE.finditer(clean) if (p := self._num(m.group(1))) is not None
+                ]
+            all_prices.extend(page_prices)
+        return all_prices, average
 
     @staticmethod
     def _model_candidates(make: str, model: str, series: str = "") -> list[str]:

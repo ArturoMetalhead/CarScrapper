@@ -148,9 +148,11 @@ def process_job(job: ScrapeJob, log: LogFn = _noop) -> None:
     job.finished_at = timezone.now()
     job.save(update_fields=["result", "status", "attempts", "finished_at"])
     n = apply_model_to_vehicles(vm)
+    _rd = vm.raw_data if isinstance(vm.raw_data, dict) else {}
+    _samples = _rd.get("listing_samples", _rd.get("market_listings", "?"))
     log(
         f"   OK: {label} -> {vm.estimated_price} {vm.currency} "
-        f"({vm.raw_data.get('samples', '?')} listings; {n} VIN(s) updated)."
+        f"({_samples} listings; {n} VIN(s) updated)."
     )
     webhooks.notify(job, vm)
 

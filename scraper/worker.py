@@ -166,6 +166,10 @@ def run_loop(
     poll = poll or getattr(settings, "SCRAPER_WORKER_POLL_SECONDS", 5)
     base_cd = getattr(settings, "SCRAPER_BLOCK_COOLDOWN", 300)
     max_cd = getattr(settings, "SCRAPER_BLOCK_COOLDOWN_MAX", 3600)
+    # Let app initialization finish before the first DB query (avoids Django 6's
+    # app-init DB-access warning and startup lock contention with the crawler).
+    if stop_event.wait(getattr(settings, "SCRAPER_STARTUP_DELAY", 2)):
+        return
     reclaimed = reclaim_running()
     if reclaimed:
         log(f"Reclaimed {reclaimed} orphan job(s) stuck in 'running'.")

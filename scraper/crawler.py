@@ -159,6 +159,11 @@ def run_planner(stop_event: threading.Event, planner: "CrawlPlanner") -> None:
     discovery_ttl = timedelta(hours=getattr(settings, "SCRAPER_CRAWL_DISCOVERY_TTL_HOURS", 24))
     timeout = getattr(settings, "SCRAPER_VIN_DECODE_TIMEOUT", 15)
 
+    # Let app initialization finish before the first DB query (avoids Django 6's
+    # app-init DB-access warning and startup lock contention with the worker).
+    if stop_event.wait(getattr(settings, "SCRAPER_STARTUP_DELAY", 2)):
+        return
+
     while not stop_event.is_set():
         try:
             planner.last_refreshed = refresh_stale(batch)

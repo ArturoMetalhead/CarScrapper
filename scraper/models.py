@@ -234,10 +234,50 @@ class ScrapeJob(models.Model):
         verbose_name_plural = "Scrape jobs"
         ordering = ["priority", "created_at"]
         indexes = [models.Index(fields=["status", "priority", "created_at"])]
+        constraints = [
+            # At most one ACTIVE (pending/running) job per make/model/year/trim, so
+            # concurrent requests can't create duplicate scrapes. (A NULL year or a
+            # different make casing is not covered by this partial index and would
+            # fall back to a harmless redundant scrape.)
+            models.UniqueConstraint(
+                fields=["make", "model", "year", "trim"],
+                condition=models.Q(status__in=["pending", "running"]),
+                name="uniq_active_scrapejob",
+            ),
+        ]
 
     def __str__(self) -> str:
         target = " ".join(str(x) for x in (self.year, self.make, self.model, self.trim) if x)
         return f"[{self.status}] {target or self.vin}"
+
+
+class ScrapeSubscriber(models.Model):
+    """A caller waiting on a ScrapeJob's result.
+
+    Because concurrent requests for the same model are deduped onto ONE job, each
+    distinct caller (its own VIN + webhook) registers here, so every requester is
+    notified with their own VIN — not just whoever created the job.
+    """
+
+    job = models.ForeignKey(
+        ScrapeJob, verbose_name="Job", on_delete=models.CASCADE, related_name="subscribers"
+    )
+    vin = models.CharField("VIN", max_length=17, blank=True, default="")
+    webhook_url = models.URLField("Webhook", max_length=500, blank=True, default="")
+    notified = models.BooleanField("Notified", default=False)
+    created_at = models.DateTimeField("Created", auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Scrape subscriber"
+        verbose_name_plural = "Scrape subscribers"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["job", "vin", "webhook_url"], name="uniq_job_subscriber"
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.vin or '?'} -> {self.webhook_url or '(default webhook)'}"
 
 
 class Vehicle(models.Model):

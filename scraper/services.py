@@ -19,10 +19,11 @@ import logging
 from datetime import timedelta
 
 from django.conf import settings
+from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from .models import ScrapeJob, ScraperSource, Vehicle, VehicleModel
+from .models import ScrapeJob, ScraperSource, ScrapeSubscriber, Vehicle, VehicleModel
 from .providers import get_provider_class
 from .providers.base import (
     AllSourcesFailed,
@@ -205,34 +206,47 @@ def enqueue_scrape(
     (no new one is created). Works for on-demand lookups, prewarming, and the
     background crawler. If the new request is higher priority (lower number) than
     the existing job, the existing job is bumped up so it jumps ahead.
-    """
-    existing = (
-        ScrapeJob.objects.filter(
-            make__iexact=make, model__iexact=model, year=year, trim__iexact=trim
-        )
-        .filter(Q(status=ScrapeJob.Status.PENDING) | Q(status=ScrapeJob.Status.RUNNING))
-        .first()
-    )
-    if existing:
-        changed = []
-        if vin and not existing.vin:
-            existing.vin = vin
-            changed.append("vin")
-        if webhook_url and not existing.webhook_url:
-            existing.webhook_url = webhook_url
-            changed.append("webhook_url")
-        if priority < existing.priority:
-            existing.priority = priority
-            existing.origin = origin
-            changed += ["priority", "origin"]
-        if changed:
-            existing.save(update_fields=changed)
-        return existing
 
-    return ScrapeJob.objects.create(
-        make=make, model=model, year=year, trim=trim, vin=vin,
-        webhook_url=webhook_url, priority=priority, origin=origin, series=series,
-    )
+    Concurrency-safe: the read + create run in a transaction, the existing job is
+    locked with select_for_update, and a partial unique constraint (plus the
+    IntegrityError fallback) guarantees two concurrent callers can't create
+    duplicate active jobs.
+    """
+    active = Q(status=ScrapeJob.Status.PENDING) | Q(status=ScrapeJob.Status.RUNNING)
+    lookup = {"make__iexact": make, "model__iexact": model, "year": year, "trim__iexact": trim}
+    with transaction.atomic():
+        existing = ScrapeJob.objects.select_for_update().filter(**lookup).filter(active).first()
+        if existing:
+            changed = []
+            if vin and not existing.vin:
+                existing.vin = vin
+                changed.append("vin")
+            if webhook_url and not existing.webhook_url:
+                existing.webhook_url = webhook_url
+                changed.append("webhook_url")
+            if priority < existing.priority:
+                existing.priority = priority
+                existing.origin = origin
+                changed += ["priority", "origin"]
+            if changed:
+                existing.save(update_fields=changed)
+            job = existing
+        else:
+            try:
+                with transaction.atomic():  # savepoint: a lost race won't abort the outer txn
+                    job = ScrapeJob.objects.create(
+                        make=make, model=model, year=year, trim=trim, vin=vin,
+                        webhook_url=webhook_url, priority=priority, origin=origin, series=series,
+                    )
+            except IntegrityError:
+                job = None  # a concurrent caller inserted it first — reuse it below
+    if job is None:
+        job = ScrapeJob.objects.filter(**lookup).filter(active).order_by("created_at").first()
+    # Register this caller as a subscriber so each distinct requester of a deduped
+    # job is notified with its OWN vin/webhook (not only whoever created the job).
+    if job is not None and (vin or webhook_url):
+        ScrapeSubscriber.objects.get_or_create(job=job, vin=vin, webhook_url=webhook_url)
+    return job
 
 
 def apply_model_to_vehicles(vm: VehicleModel) -> int:

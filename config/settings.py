@@ -77,6 +77,16 @@ DATABASES = {
     )
 }
 
+# SQLite is single-writer; the background worker + crawler threads contend for it,
+# surfacing as "database is locked". WAL lets readers run alongside the writer, a
+# busy timeout makes writers WAIT for the lock instead of erroring, and IMMEDIATE
+# transactions take the write lock up front (avoids mid-transaction lock upgrades).
+if "sqlite3" in DATABASES["default"].get("ENGINE", ""):
+    _sqlite_opts = DATABASES["default"].setdefault("OPTIONS", {})
+    _sqlite_opts.setdefault("timeout", 30)
+    _sqlite_opts.setdefault("init_command", "PRAGMA journal_mode=WAL;")
+    _sqlite_opts.setdefault("transaction_mode", "IMMEDIATE")
+
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
@@ -181,12 +191,15 @@ SCRAPER_CACHE_TTL_HOURS = env.int("SCRAPER_CACHE_TTL_HOURS", default=24)
 # Worker: starts alongside the API (background thread). Set to False to run it
 # separately with `manage.py run_scrape_worker`.
 SCRAPER_WORKER_AUTOSTART = env.bool("SCRAPER_WORKER_AUTOSTART", default=True)
+# Seconds the autostarted worker/crawler threads wait before their first DB query,
+# so app initialization finishes first (avoids Django's app-init DB-access warning).
+SCRAPER_STARTUP_DELAY = env.int("SCRAPER_STARTUP_DELAY", default=2)
 # Worker: seconds between polls when the queue is empty.
 SCRAPER_WORKER_POLL_SECONDS = env.int("SCRAPER_WORKER_POLL_SECONDS", default=5)
 # Seconds to wait AFTER each scrape (with jitter). A single residential IP only
 # survives LOW volume against DataDome; back-to-back scraping gets it flagged
 # (403). Higher = safer/slower. 0 = no throttle (only for a single lookup).
-SCRAPER_WORKER_DELAY = env.int("SCRAPER_WORKER_DELAY", default=45)
+SCRAPER_WORKER_DELAY = env.int("SCRAPER_WORKER_DELAY", default=300)
 # Max attempts per job before marking it failed.
 SCRAPER_JOB_MAX_ATTEMPTS = env.int("SCRAPER_JOB_MAX_ATTEMPTS", default=3)
 # On a DataDome 403 the worker first ROTATES its Chrome profile (fresh session /
@@ -202,18 +215,21 @@ SCRAPER_BLOCK_COOLDOWN_MAX = env.int("SCRAPER_BLOCK_COOLDOWN_MAX", default=3600)
 
 # Proactively discover models (via NHTSA), scrape and keep them fresh. The worker
 # self-regulates: if DataDome starts blocking (403), it cools down and resumes
-# automatically when unblocked. Keep the volume gentle via SCRAPER_WORKER_DELAY.
+# automatically when unblocked. Defaults are tuned VERY GENTLE (a single
+# residential IP survives only low volume against DataDome): a 6h cycle, small
+# batches, and a 5-min gap between background scrapes. Raise them only if you have
+# proxies / more IPs. Set SCRAPER_CRAWL_ENABLED=False to disable it entirely.
 SCRAPER_CRAWL_ENABLED = env.bool("SCRAPER_CRAWL_ENABLED", default=True)
 # Makes to crawl (empty -> the mainstream default list in crawler.MAINSTREAM_MAKES).
 SCRAPER_CRAWL_MAKES = env.list("SCRAPER_CRAWL_MAKES", default=[])
-# How many recent model years to cover (e.g. 8 -> the last 8 years).
-SCRAPER_CRAWL_YEARS_BACK = env.int("SCRAPER_CRAWL_YEARS_BACK", default=8)
-# Planner cycle interval (s): how often to top up the queue and refresh stale.
-SCRAPER_CRAWL_PLAN_INTERVAL = env.int("SCRAPER_CRAWL_PLAN_INTERVAL", default=900)
+# How many recent model years to cover (e.g. 3 -> the last 3 years).
+SCRAPER_CRAWL_YEARS_BACK = env.int("SCRAPER_CRAWL_YEARS_BACK", default=3)
+# Planner cycle interval (s): how often to top up the queue and refresh stale (6h).
+SCRAPER_CRAWL_PLAN_INTERVAL = env.int("SCRAPER_CRAWL_PLAN_INTERVAL", default=21600)
 # Top up crawl jobs only when fewer than this many are pending.
-SCRAPER_CRAWL_QUEUE_MIN = env.int("SCRAPER_CRAWL_QUEUE_MIN", default=20)
+SCRAPER_CRAWL_QUEUE_MIN = env.int("SCRAPER_CRAWL_QUEUE_MIN", default=5)
 # Max models seeded/refreshed per planner cycle.
-SCRAPER_CRAWL_BATCH = env.int("SCRAPER_CRAWL_BATCH", default=50)
+SCRAPER_CRAWL_BATCH = env.int("SCRAPER_CRAWL_BATCH", default=8)
 # How long the discovered model frontier is cached before re-discovering.
 SCRAPER_CRAWL_DISCOVERY_TTL_HOURS = env.int("SCRAPER_CRAWL_DISCOVERY_TTL_HOURS", default=24)
 

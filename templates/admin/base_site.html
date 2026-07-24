@@ -1,0 +1,140 @@
+{% extends "admin/base.html" %}
+{% comment %}
+Tema del admin de CarScrapper: reusa toda la maquetación del admin de Django y le
+aplica la paleta oscura del dashboard/panel (slate + cian #38bdf8 + verde #34d399)
+sobreescribiendo las variables CSS del admin, más algunos retoques (degradado de
+fondo, cabecera con acento, tarjetas y campos redondeados).
+{% endcomment %}
+
+{% block title %}{{ title }} | CarScrapper{% endblock %}
+
+{% block branding %}
+<div id="site-name">
+  <a href="{% url 'admin:index' %}">Car<span class="cs-accent">Scrapper</span><span class="cs-tag">Panel de datos</span></a>
+</div>
+{% if user.is_anonymous %}{% include "admin/color_theme_toggle.html" %}{% endif %}
+{% endblock %}
+
+{% block extrastyle %}{{ block.super }}
+<style>
+  /* Fuerza la paleta en cualquier estado del selector de tema (auto/claro/oscuro). */
+  :root,
+  :root[data-theme="light"],
+  :root[data-theme="dark"] {
+    --primary: #1e293b;
+    --primary-fg: #e2e8f0;
+    --secondary: #172033;
+    --accent: #38bdf8;
+
+    --body-fg: #e2e8f0;
+    --body-bg: #0f172a;
+    --body-quiet-color: #94a3b8;
+    --body-loud-color: #f1f5f9;
+
+    --header-color: #e2e8f0;
+    --header-branding-color: #38bdf8;
+    --header-bg: #131f38;
+    --header-link-color: #e2e8f0;
+
+    --breadcrumbs-fg: #94a3b8;
+    --breadcrumbs-link-fg: #38bdf8;
+    --breadcrumbs-bg: #172033;
+
+    --link-fg: #38bdf8;
+    --link-hover-color: #7dd3fc;
+    --link-selected-fg: #7dd3fc;
+
+    --hairline-color: #2b3a52;
+    --border-color: #334155;
+
+    --button-fg: #04222f;
+    --button-bg: #38bdf8;
+    --button-hover-bg: #7dd3fc;
+    --default-button-bg: #34d399;
+    --default-button-hover-bg: #6ee7b7;
+    --close-button-bg: #475569;
+    --close-button-hover-bg: #334155;
+    --delete-button-bg: #f87171;
+    --delete-button-hover-bg: #ef4444;
+
+    --object-tools-fg: #04222f;
+    --object-tools-bg: #38bdf8;
+    --object-tools-hover-bg: #7dd3fc;
+
+    --selected-bg: #172033;
+    --selected-row: #0b3b52;
+    --darkened-bg: #172033;
+
+    --message-success-bg: #10241f;
+    --message-warning-bg: #2a2410;
+    --message-error-bg: #2a1416;
+
+    --font-family-primary: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color-scheme: dark;
+  }
+
+  /* Fondo con el degradado del dashboard. */
+  body {
+    background:
+      radial-gradient(1100px 600px at 15% -5%, rgba(56,189,248,.10), transparent 60%),
+      radial-gradient(900px 600px at 100% 10%, rgba(129,140,248,.12), transparent 55%),
+      var(--body-bg);
+  }
+
+  /* Cabecera con marca y borde de acento. */
+  #header {
+    border-bottom: 1px solid var(--accent);
+    box-shadow: 0 2px 20px rgba(0,0,0,.4);
+  }
+  #site-name a { font-weight: 800; letter-spacing: .5px; }
+  #branding .cs-accent { color: var(--accent); }
+  #branding .cs-tag {
+    display: inline-block; margin-left: 10px; padding: 2px 10px;
+    font-size: 12px; font-weight: 600; color: #94a3b8;
+    border: 1px solid var(--border-color); border-radius: 999px;
+    vertical-align: middle; letter-spacing: .3px;
+  }
+
+  /* Módulos / tarjetas redondeadas. */
+  .module, .dashboard .module, #changelist-filter, .inline-group, fieldset.module {
+    border: 1px solid var(--border-color);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+  .module caption, .module > h2, .module > h3,
+  .inline-group h2, fieldset > h2 {
+    background: var(--secondary);
+    color: var(--body-quiet-color) !important;
+    text-transform: uppercase; letter-spacing: .6px; font-size: 12px;
+  }
+
+  /* Campos de formulario. */
+  input:not([type=checkbox]):not([type=radio]),
+  textarea, select, .vTextField {
+    background: var(--secondary) !important;
+    color: var(--body-fg) !important;
+    border: 1px solid var(--border-color) !important;
+    border-radius: 9px !important;
+  }
+  input:focus, textarea:focus, select:focus {
+    border-color: var(--accent) !important;
+    box-shadow: 0 0 0 3px rgba(56,189,248,.15) !important;
+    outline: none !important;
+  }
+
+  /* Listados. */
+  #changelist table thead th { background: var(--secondary); }
+  #changelist table tbody tr:hover > * { background: var(--selected-bg); }
+
+  /* Botones redondeados. */
+  .button, input[type=submit], input[type=button],
+  .submit-row input, a.button, .object-tools a {
+    border-radius: 9px; font-weight: 700;
+  }
+  .object-tools a { border-radius: 999px; }
+  .paginator a { border-radius: 8px; }
+
+  /* Enlaces de resultado bien visibles. */
+  #changelist table tbody a { color: var(--link-fg); }
+</style>
+{% endblock %}

@@ -106,14 +106,14 @@
 
       <div id="vinBox" class="row">
         <input id="vin" placeholder="Nº de bastidor (VIN, 17 caracteres)" maxlength="17"
-               value="1HGCV1F13KA000000" autocomplete="off">
+               autocomplete="off">
         <button class="btn" onclick="lookupVin()">Valorar</button>
       </div>
 
       <div id="modelBox" class="row" style="display:none">
-        <input id="mk" placeholder="Marca" value="Mazda" autocomplete="off">
-        <input id="mo" placeholder="Modelo" value="CX-5" autocomplete="off">
-        <input id="yr" placeholder="Año" value="2026" style="flex:0 0 90px" autocomplete="off">
+        <input id="mk" placeholder="Marca" autocomplete="off">
+        <input id="mo" placeholder="Modelo" autocomplete="off">
+        <input id="yr" placeholder="Año" style="flex:0 0 90px" autocomplete="off">
         <button class="btn" onclick="lookupModel()">Valorar</button>
       </div>
 
@@ -256,16 +256,24 @@ async function lookupModel(){
   const {data}=await api("/models/lookup/","POST",{make,model,year});
   if(data.status==="ready"){ return render(data.model_data); }
   loading("Estamos calculando el precio de mercado, un momento…");
+  // Wait on the enqueued job (stop on 'failed') instead of re-POSTing the lookup,
+  // which would create a new job each poll and hammer a blocking source.
+  const jobId=data.job_id;
   let tries=0;
   poll=setInterval(async()=>{
     tries++;
-    const {data:d}=await api("/models/lookup/","POST",{make,model,year});
-    if(d.status==="ready"){ clearInterval(poll); render(d.model_data); return; }
-    if(tries>30){
+    const j=await api(`/jobs/${jobId}/`);
+    const st=(jobId && j.data) ? j.data.status : "failed";
+    if(st==="done"){
+      clearInterval(poll);
+      const {data:d}=await api("/models/lookup/","POST",{make,model,year});
+      render(d.model_data); return;
+    }
+    if(st==="failed" || tries>40){
       clearInterval(poll);
       error("No hemos podido obtener el precio de este modelo. Puede que no esté disponible en nuestra fuente.");
     }
-  },4000);
+  },3000);
 }
 
 document.getElementById("vin").addEventListener("keydown",e=>{ if(e.key==="Enter") lookupVin(); });

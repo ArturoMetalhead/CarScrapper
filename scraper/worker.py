@@ -144,12 +144,15 @@ def process_job(job: ScrapeJob, log: LogFn = _noop) -> None:
 
     job.result = vm
     job.status = ScrapeJob.Status.DONE
+    job.attempts += 1  # count the successful try too (not only failures)
     job.finished_at = timezone.now()
     job.save(update_fields=["result", "status", "attempts", "finished_at"])
     n = apply_model_to_vehicles(vm)
+    _rd = vm.raw_data if isinstance(vm.raw_data, dict) else {}
+    _samples = _rd.get("listing_samples", _rd.get("market_listings", "?"))
     log(
         f"   OK: {label} -> {vm.estimated_price} {vm.currency} "
-        f"({vm.raw_data.get('samples', '?')} listings; {n} VIN(s) updated)."
+        f"({_samples} listings; {n} VIN(s) updated)."
     )
     webhooks.notify(job, vm)
 
@@ -165,6 +168,10 @@ def run_loop(
     poll = poll or getattr(settings, "SCRAPER_WORKER_POLL_SECONDS", 5)
     base_cd = getattr(settings, "SCRAPER_BLOCK_COOLDOWN", 300)
     max_cd = getattr(settings, "SCRAPER_BLOCK_COOLDOWN_MAX", 3600)
+    # Let app initialization finish before the first DB query (avoids Django 6's
+    # app-init DB-access warning and startup lock contention with the crawler).
+    if stop_event.wait(getattr(settings, "SCRAPER_STARTUP_DELAY", 2)):
+        return
     reclaimed = reclaim_running()
     if reclaimed:
         log(f"Reclaimed {reclaimed} orphan job(s) stuck in 'running'.")

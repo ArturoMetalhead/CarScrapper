@@ -10,6 +10,9 @@
   (nodriver allows a single browser) and notifies via webhook when done.
 - `Vehicle`: a specific VIN already resolved (decoded with NHTSA + linked to its
   `VehicleModel`). Serves repeated lookups of the same VIN instantly.
+
+Los `verbose_name` visibles están en español (el proyecto usa LANGUAGE_CODE=es);
+los valores internos (choices, keys) se mantienen en inglés a propósito.
 """
 from django.db import models
 
@@ -21,18 +24,18 @@ class ScraperSource(models.Model):
     service moves on to the next active source automatically.
     """
 
-    name = models.CharField("Name", max_length=100, unique=True)
+    name = models.CharField("Nombre", max_length=100, unique=True)
     slug = models.SlugField("Slug", max_length=100, unique=True)
 
-    base_url = models.URLField("Base URL", max_length=500)
+    base_url = models.URLField("URL base", max_length=500)
     vin_path_template = models.CharField(
-        "VIN path template",
+        "Plantilla de ruta VIN",
         max_length=300,
         default="/inventory/vin/{vin}",
         help_text="Path appended to the base URL to query a VIN. Use {vin} as placeholder.",
     )
     model_path_template = models.CharField(
-        "Model path template",
+        "Plantilla de ruta de modelo",
         max_length=300,
         blank=True,
         default="",
@@ -43,7 +46,7 @@ class ScraperSource(models.Model):
     )
 
     provider_key = models.CharField(
-        "Provider key",
+        "Clave de proveedor",
         max_length=50,
         default="generic",
         help_text=(
@@ -53,7 +56,7 @@ class ScraperSource(models.Model):
     )
 
     selectors = models.JSONField(
-        "CSS selectors",
+        "Selectores CSS",
         default=dict,
         blank=True,
         help_text=(
@@ -63,22 +66,22 @@ class ScraperSource(models.Model):
     )
 
     priority = models.PositiveIntegerField(
-        "Priority", default=100, help_text="Lower number = tried first."
+        "Prioridad", default=100, help_text="Lower number = tried first."
     )
-    is_active = models.BooleanField("Active", default=True)
+    is_active = models.BooleanField("Activa", default=True)
     timeout = models.PositiveIntegerField(
-        "Timeout (s)",
+        "Tiempo límite (s)",
         null=True,
         blank=True,
         help_text="Source-specific timeout. If empty, the global one is used.",
     )
 
-    created_at = models.DateTimeField("Created", auto_now_add=True)
-    updated_at = models.DateTimeField("Updated", auto_now=True)
+    created_at = models.DateTimeField("Creado", auto_now_add=True)
+    updated_at = models.DateTimeField("Actualizado", auto_now=True)
 
     class Meta:
-        verbose_name = "Scraper source"
-        verbose_name_plural = "Scraper sources"
+        verbose_name = "Fuente de scraping"
+        verbose_name_plural = "Fuentes de scraping"
         ordering = ["priority", "name"]
 
     def __str__(self) -> str:
@@ -120,49 +123,49 @@ class VehicleModel(models.Model):
     this row. `updated_at` tells whether the data is fresh.
     """
 
-    make = models.CharField("Make", max_length=100)
-    model = models.CharField("Model", max_length=100)
-    year = models.PositiveIntegerField("Year", null=True, blank=True)
-    trim = models.CharField("Trim", max_length=120, blank=True, default="")
+    make = models.CharField("Marca", max_length=100)
+    model = models.CharField("Modelo", max_length=100)
+    year = models.PositiveIntegerField("Año", null=True, blank=True)
+    trim = models.CharField("Versión", max_length=120, blank=True, default="")
 
     # Headline market price (Edmunds' suggested price for new cars, or the
     # median of used listings). `price_low`/`price_high` hold the range and
     # `price_kind` records where the number came from.
     estimated_price = models.DecimalField(
-        "Estimated price", max_digits=12, decimal_places=2, null=True, blank=True
+        "Precio estimado", max_digits=12, decimal_places=2, null=True, blank=True
     )
     price_low = models.DecimalField(
-        "Price (low)", max_digits=12, decimal_places=2, null=True, blank=True
+        "Precio (mín)", max_digits=12, decimal_places=2, null=True, blank=True
     )
     price_high = models.DecimalField(
-        "Price (high)", max_digits=12, decimal_places=2, null=True, blank=True
+        "Precio (máx)", max_digits=12, decimal_places=2, null=True, blank=True
     )
     price_kind = models.CharField(
-        "Price kind",
+        "Tipo de precio",
         max_length=32,
         blank=True,
         default="",
         help_text="How estimated_price was obtained: edmunds_suggested, msrp_range_mid, used_listings_median.",
     )
-    currency = models.CharField("Currency", max_length=8, default="USD", blank=True)
+    currency = models.CharField("Moneda", max_length=8, default="USD", blank=True)
 
     source = models.ForeignKey(
         ScraperSource,
-        verbose_name="Source",
+        verbose_name="Fuente",
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
         related_name="vehicle_models",
     )
-    source_url = models.URLField("Source URL", max_length=500, blank=True)
-    raw_data = models.JSONField("Raw data", default=dict, blank=True)
+    source_url = models.URLField("URL de la fuente", max_length=500, blank=True)
+    raw_data = models.JSONField("Datos crudos", default=dict, blank=True)
 
-    created_at = models.DateTimeField("Created", auto_now_add=True)
-    updated_at = models.DateTimeField("Updated", auto_now=True)
+    created_at = models.DateTimeField("Creado", auto_now_add=True)
+    updated_at = models.DateTimeField("Actualizado", auto_now=True)
 
     class Meta:
-        verbose_name = "Model data"
-        verbose_name_plural = "Model data"
+        verbose_name = "Datos de modelo"
+        verbose_name_plural = "Datos de modelos"
         ordering = ["make", "model", "year", "trim"]
         constraints = [
             models.UniqueConstraint(
@@ -183,61 +186,101 @@ class ScrapeJob(models.Model):
     """
 
     class Status(models.TextChoices):
-        PENDING = "pending", "Pending"
-        RUNNING = "running", "Running"
-        DONE = "done", "Done"
-        FAILED = "failed", "Failed"
+        PENDING = "pending", "Pendiente"
+        RUNNING = "running", "En curso"
+        DONE = "done", "Listo"
+        FAILED = "failed", "Falló"
 
-    make = models.CharField("Make", max_length=100)
-    model = models.CharField("Model", max_length=100)
-    year = models.PositiveIntegerField("Year", null=True, blank=True)
-    trim = models.CharField("Trim", max_length=120, blank=True, default="")
+    make = models.CharField("Marca", max_length=100)
+    model = models.CharField("Modelo", max_length=100)
+    year = models.PositiveIntegerField("Año", null=True, blank=True)
+    trim = models.CharField("Versión", max_length=120, blank=True, default="")
     # NHTSA "Series" (e.g. BMW "3-Series") — an extra model-slug candidate for
     # sites (Edmunds) that group by series instead of engine variant.
-    series = models.CharField("Series", max_length=120, blank=True, default="")
+    series = models.CharField("Serie", max_length=120, blank=True, default="")
 
     # VIN that triggered the job (for the webhook). May come from a prewarm.
-    vin = models.CharField("Origin VIN", max_length=17, blank=True, default="", db_index=True)
+    vin = models.CharField("VIN de origen", max_length=17, blank=True, default="", db_index=True)
 
     status = models.CharField(
-        "Status", max_length=10, choices=Status.choices,
+        "Estado", max_length=10, choices=Status.choices,
         default=Status.PENDING, db_index=True,
     )
     # Lower number = processed first. On-demand lookups use a low value so they
     # jump ahead of background crawl/refresh jobs.
-    priority = models.PositiveIntegerField("Priority", default=100, db_index=True)
+    priority = models.PositiveIntegerField("Prioridad", default=100, db_index=True)
     origin = models.CharField(
-        "Origin", max_length=20, blank=True, default="lookup",
-        help_text="Who created the job: lookup, model_lookup, prewarm, crawl, refresh.",
+        "Origen", max_length=20, blank=True, default="lookup",
+        help_text="Who created the job: lookup, model_lookup, prewarm, crawl, refresh, rescrape.",
     )
-    attempts = models.PositiveIntegerField("Attempts", default=0)
-    last_error = models.TextField("Last error", blank=True, default="")
+    attempts = models.PositiveIntegerField("Intentos", default=0)
+    last_error = models.TextField("Último error", blank=True, default="")
 
     # Optional callback URL; if empty, SCRAPER_WEBHOOK_URL is used.
     webhook_url = models.URLField("Webhook", max_length=500, blank=True, default="")
 
     result = models.ForeignKey(
         VehicleModel,
-        verbose_name="Result",
+        verbose_name="Resultado",
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
         related_name="jobs",
     )
 
-    created_at = models.DateTimeField("Created", auto_now_add=True)
-    started_at = models.DateTimeField("Started", null=True, blank=True)
-    finished_at = models.DateTimeField("Finished", null=True, blank=True)
+    created_at = models.DateTimeField("Creado", auto_now_add=True)
+    started_at = models.DateTimeField("Iniciado", null=True, blank=True)
+    finished_at = models.DateTimeField("Terminado", null=True, blank=True)
 
     class Meta:
-        verbose_name = "Scrape job"
-        verbose_name_plural = "Scrape jobs"
+        verbose_name = "Trabajo de scraping"
+        verbose_name_plural = "Trabajos de scraping"
         ordering = ["priority", "created_at"]
         indexes = [models.Index(fields=["status", "priority", "created_at"])]
+        constraints = [
+            # At most one ACTIVE (pending/running) job per make/model/year/trim, so
+            # concurrent requests can't create duplicate scrapes. (A NULL year or a
+            # different make casing is not covered by this partial index and would
+            # fall back to a harmless redundant scrape.)
+            models.UniqueConstraint(
+                fields=["make", "model", "year", "trim"],
+                condition=models.Q(status__in=["pending", "running"]),
+                name="uniq_active_scrapejob",
+            ),
+        ]
 
     def __str__(self) -> str:
         target = " ".join(str(x) for x in (self.year, self.make, self.model, self.trim) if x)
         return f"[{self.status}] {target or self.vin}"
+
+
+class ScrapeSubscriber(models.Model):
+    """A caller waiting on a ScrapeJob's result.
+
+    Because concurrent requests for the same model are deduped onto ONE job, each
+    distinct caller (its own VIN + webhook) registers here, so every requester is
+    notified with their own VIN — not just whoever created the job.
+    """
+
+    job = models.ForeignKey(
+        ScrapeJob, verbose_name="Trabajo", on_delete=models.CASCADE, related_name="subscribers"
+    )
+    vin = models.CharField("VIN", max_length=17, blank=True, default="")
+    webhook_url = models.URLField("Webhook", max_length=500, blank=True, default="")
+    notified = models.BooleanField("Notificado", default=False)
+    created_at = models.DateTimeField("Creado", auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Suscriptor"
+        verbose_name_plural = "Suscriptores"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["job", "vin", "webhook_url"], name="uniq_job_subscriber"
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.vin or '?'} -> {self.webhook_url or '(default webhook)'}"
 
 
 class Vehicle(models.Model):
@@ -257,49 +300,49 @@ class Vehicle(models.Model):
     )
 
     # Decoded VIN data (NHTSA).
-    make = models.CharField("Make", max_length=100, blank=True)
-    model = models.CharField("Model", max_length=100, blank=True)
-    year = models.PositiveIntegerField("Year", null=True, blank=True)
-    trim = models.CharField("Trim", max_length=120, blank=True)
-    body_class = models.CharField("Body class", max_length=100, blank=True, default="")
-    mileage = models.PositiveIntegerField("Mileage", null=True, blank=True)
+    make = models.CharField("Marca", max_length=100, blank=True)
+    model = models.CharField("Modelo", max_length=100, blank=True)
+    year = models.PositiveIntegerField("Año", null=True, blank=True)
+    trim = models.CharField("Versión", max_length=120, blank=True)
+    body_class = models.CharField("Carrocería", max_length=100, blank=True, default="")
+    mileage = models.PositiveIntegerField("Kilometraje", null=True, blank=True)
 
     # Market data, inherited from the scraped model.
     vehicle_model = models.ForeignKey(
         VehicleModel,
-        verbose_name="Model data",
+        verbose_name="Datos de modelo",
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
         related_name="vehicles",
     )
     estimated_price = models.DecimalField(
-        "Estimated price", max_digits=12, decimal_places=2, null=True, blank=True
+        "Precio estimado", max_digits=12, decimal_places=2, null=True, blank=True
     )
-    currency = models.CharField("Currency", max_length=8, default="USD", blank=True)
+    currency = models.CharField("Moneda", max_length=8, default="USD", blank=True)
 
     source = models.ForeignKey(
         ScraperSource,
-        verbose_name="Source",
+        verbose_name="Fuente",
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
         related_name="vehicles",
     )
-    source_url = models.URLField("Source URL", max_length=500, blank=True)
+    source_url = models.URLField("URL de la fuente", max_length=500, blank=True)
     raw_data = models.JSONField(
-        "Raw data",
+        "Datos crudos",
         default=dict,
         blank=True,
         help_text="NHTSA decode and scraping payload, in case it is needed later.",
     )
 
-    created_at = models.DateTimeField("Created", auto_now_add=True)
-    updated_at = models.DateTimeField("Updated", auto_now=True)
+    created_at = models.DateTimeField("Creado", auto_now_add=True)
+    updated_at = models.DateTimeField("Actualizado", auto_now=True)
 
     class Meta:
-        verbose_name = "Vehicle"
-        verbose_name_plural = "Vehicles"
+        verbose_name = "Vehículo"
+        verbose_name_plural = "Vehículos"
         ordering = ["-updated_at"]
 
     def __str__(self) -> str:

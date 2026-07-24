@@ -54,7 +54,8 @@ def _makes() -> list[str]:
 def _years() -> list[int]:
     back = getattr(settings, "SCRAPER_CRAWL_YEARS_BACK", 8)
     current = timezone.now().year
-    return list(range(current - back + 1, current + 1))
+    # +2 so the NEXT model year (e.g. 2027 cars on sale mid-2026) is discovered too.
+    return list(range(current - back + 1, current + 2))
 
 
 def _models_for(make: str, year: int, timeout: int) -> set[str]:
@@ -129,7 +130,12 @@ def refresh_stale(limit: int) -> int:
     )
     refreshed = 0
     for vm in stale:
-        enqueue_scrape(vm.make, vm.model, vm.year, priority=PRIORITY_REFRESH, origin="refresh")
+        # Keep the trim so trim-specific rows (from VIN searches) actually refresh
+        # instead of forever re-scraping the trim="" variant every cycle.
+        enqueue_scrape(
+            vm.make, vm.model, vm.year, trim=vm.trim,
+            priority=PRIORITY_REFRESH, origin="refresh",
+        )
         refreshed += 1
     return refreshed
 
@@ -152,6 +158,11 @@ def run_planner(stop_event: threading.Event, planner: "CrawlPlanner") -> None:
     batch = getattr(settings, "SCRAPER_CRAWL_BATCH", 50)
     discovery_ttl = timedelta(hours=getattr(settings, "SCRAPER_CRAWL_DISCOVERY_TTL_HOURS", 24))
     timeout = getattr(settings, "SCRAPER_VIN_DECODE_TIMEOUT", 15)
+
+    # Let app initialization finish before the first DB query (avoids Django 6's
+    # app-init DB-access warning and startup lock contention with the worker).
+    if stop_event.wait(getattr(settings, "SCRAPER_STARTUP_DELAY", 2)):
+        return
 
     while not stop_event.is_set():
         try:

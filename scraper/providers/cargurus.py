@@ -19,7 +19,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from .base import BlockedError, ScrapedVehicle, ScraperError, VehicleNotFound
-from .edmunds import _PRICE_RE, EdmundsProvider, trim_regex
+from .edmunds import _PRICE_MAX, _PRICE_MIN, _PRICE_RE, EdmundsProvider, trim_regex
 from .generic import GenericProvider
 from .nodriver_fetch import NodriverFetchMixin
 from .registry import register
@@ -68,23 +68,28 @@ class CarGurusProvider(NodriverFetchMixin, GenericProvider):
         if not model_id:
             raise VehicleNotFound(f"CarGurus: no model id for {make} {model}.")
 
-        prices, url = self._search_prices(make_id, model_id, year, trim)
+        prices, url, trim_matched = self._search_prices(make_id, model_id, year, trim)
         if not prices:
             raise VehicleNotFound(
                 f"CarGurus: no {trim} listings for {make} {model} {year}.".replace("  ", " ")
             )
 
+        # If a trim was requested but too few matched, we fell back to ALL trims;
+        # flag it (distinct kind + raw_data) so the row is NOT taken as trim-accurate.
+        degraded = bool(trim) and not trim_matched
+        kind = "cargurus_alltrims_median" if degraded else "cargurus_listings_median"
         estimated, low, high = EdmundsProvider._robust_listing_stats(prices)
         return ScrapedVehicle(
             vin="", make=make, model=model, year=year, trim=trim or "",
             estimated_price=estimated, price_low=low, price_high=high,
-            price_kind="cargurus_listings_median", currency="USD", source_url=url,
+            price_kind=kind, currency="USD", source_url=url,
             raw_data={
-                "price_kind": "cargurus_listings_median",
+                "price_kind": kind,
                 "listing_samples": len(prices),
                 "listing_median": float(estimated),
                 "range": [float(low), float(high)],
                 "trim": trim or None,
+                "trim_matched": None if not trim else trim_matched,
             },
         )
 
@@ -103,12 +108,14 @@ class CarGurusProvider(NodriverFetchMixin, GenericProvider):
         return f"{_SEARCH_URL}?{'&'.join(params)}"
 
     def _search_prices(self, make_id: str, model_id: str, year, trim: str):
-        """Fetch the price-ascending /search results and return (prices, url).
+        """Fetch the price-ascending /search results; return (prices, url, trim_matched).
 
         Each listing card carries its full title (e.g. "... Honda HR-V Sport AWD
         ..."); when `trim` is given (VIN searches) only cards whose title matches
         that trim are kept, so a Sport search doesn't pick up LX prices. Ascending
         surfaces the real floor and a representative low-to-mid spread in one fetch.
+        `trim_matched` is True when the trim yielded enough listings, False when it
+        fell back to all trims, and None when no trim was requested.
         """
         url = self._search_url(make_id, model_id, year, "ASC")
         resp = self._render(url)
@@ -129,7 +136,7 @@ class CarGurusProvider(NodriverFetchMixin, GenericProvider):
                 value = Decimal(m.group(1).replace(",", ""))
             except Exception:  # noqa: BLE001
                 continue
-            if not (3000 <= value <= 200000):  # plausible used-car price
+            if not (_PRICE_MIN <= value <= _PRICE_MAX):  # plausible car price
                 continue
             all_prices.append(value)
             if trim_re is not None:
@@ -141,8 +148,9 @@ class CarGurusProvider(NodriverFetchMixin, GenericProvider):
         # mismatch or thin old-car inventory), fall back to ALL trims so we still
         # return a model-level range rather than "not found".
         min_n = getattr(settings, "SCRAPER_EDMUNDS_MIN_LISTINGS", 5)
-        prices = trim_prices if (trim_re is not None and len(trim_prices) >= min_n) else all_prices
-        return prices, url
+        trim_matched = trim_re is not None and len(trim_prices) >= min_n
+        prices = trim_prices if trim_matched else all_prices
+        return prices, url, (None if trim_re is None else trim_matched)
 
     # --- Model-id resolution --------------------------------------------
     def _resolve_model(self, make_id: str, model: str, series: str) -> tuple[str, str]:
@@ -169,6 +177,10 @@ class CarGurusProvider(NodriverFetchMixin, GenericProvider):
             return _REF_CACHE["models"]
 
         resp = self._render(_REF_URL)
+        # A PerimeterX challenge here would otherwise become a cryptic JSONDecodeError
+        # that bypasses the worker's block recovery; surface it as a BlockedError.
+        if self._is_cargurus_block(resp.text):
+            raise BlockedError("CarGurus blocked the reference request.")
         match = re.search(r"\{.*\}", resp.text, re.S)
         data = json.loads(match.group(0)) if match else {}
         raw = data.get("allMakerModels", {})

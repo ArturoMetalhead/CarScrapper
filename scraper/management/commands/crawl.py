@@ -28,10 +28,9 @@ class Command(BaseCommand):
         makes = [m.strip() for m in options["makes"].split(",") if m.strip()] or None
         years = None
         if options["years_back"]:
-            from scraper.crawler import _years  # reuse current-year logic
             import django.utils.timezone as tz
             current = tz.now().year
-            years = list(range(current - options["years_back"] + 1, current + 1))
+            years = list(range(current - options["years_back"] + 1, current + 2))
         limit = options["limit"] or getattr(settings, "SCRAPER_CRAWL_BATCH", 50)
 
         self.stdout.write("Discovering models via NHTSA...")

@@ -147,6 +147,11 @@ REST_FRAMEWORK = {
     "DEFAULT_PARSER_CLASSES": [
         "rest_framework.parsers.JSONParser",
     ],
+    # Cierre por defecto: todo endpoint exige autenticación salvo que declare
+    # AllowAny explícito (los del flujo del cliente: health + lookups + status).
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
     "DEFAULT_THROTTLE_CLASSES": [
         "rest_framework.throttling.AnonRateThrottle",
     ],

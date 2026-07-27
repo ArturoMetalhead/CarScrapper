@@ -20,6 +20,7 @@ from datetime import timedelta
 from typing import Callable
 
 from django.conf import settings
+from django.db import close_old_connections
 from django.utils import timezone
 
 from . import webhooks
@@ -62,10 +63,17 @@ def reclaim_running() -> int:
 
 
 def _has_pending_ondemand() -> bool:
-    """True if a user (on-demand) search is waiting — it must not be delayed."""
-    return ScrapeJob.objects.filter(
-        status=ScrapeJob.Status.PENDING, priority__lte=PRIORITY_ONDEMAND
-    ).exists()
+    """True if a user (on-demand) search is waiting — it must not be delayed.
+
+    Defensive: a transient DB error here must not kill the worker loop; treat it
+    as "none pending" and let the loop continue.
+    """
+    try:
+        return ScrapeJob.objects.filter(
+            status=ScrapeJob.Status.PENDING, priority__lte=PRIORITY_ONDEMAND
+        ).exists()
+    except Exception:  # noqa: BLE001 — transient DB issue
+        return False
 
 
 def claim_next_job() -> ScrapeJob | None:
@@ -177,6 +185,10 @@ def run_loop(
         log(f"Reclaimed {reclaimed} orphan job(s) stuck in 'running'.")
     while not stop_event.is_set():
         WORKER_STATE["activity"] = None  # cleared between jobs; set while scraping
+        # Drop DB connections the server may have closed while the worker was idle
+        # or scraping, so the next query reconnects instead of raising (this loop
+        # lives outside the request cycle, so Django never refreshes them for us).
+        close_old_connections()
         try:
             job = claim_next_job()
         except Exception:  # noqa: BLE001 — transient DB issues must not kill the loop
@@ -222,6 +234,10 @@ def run_loop(
                 stop_event.wait(step)
                 remaining -= step
             WORKER_STATE["cooling_until"] = None
+            continue
+        except Exception:  # noqa: BLE001 — an unexpected failure must not kill the worker
+            logger.exception("Unexpected error processing job %s", getattr(job, "pk", "?"))
+            stop_event.wait(min(poll, 5))
             continue
 
         # A scrape that didn't block (success or plain not-found) means access

@@ -46,6 +46,10 @@ services:
       # Ajustes de gunicorn (los lee gunicorn.conf.py).
       PORT: ${PORT:-8000}
       WEB_CONCURRENCY: ${WEB_CONCURRENCY:-3}
+      # El contenedor web NUNCA scrapea (el worker corre aparte y no hay Chromium
+      # aquí). Forzado para no depender solo de lo que diga .env.production.
+      SCRAPER_WORKER_AUTOSTART: "False"
+      SCRAPER_CRAWL_ENABLED: "False"
     depends_on:
       db:
         condition: service_healthy

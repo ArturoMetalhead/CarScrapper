@@ -1,5 +1,8 @@
 """Scraper app serializers."""
+import ipaddress
 import re
+import socket
+from urllib.parse import urlparse
 
 from rest_framework import serializers
 
@@ -16,6 +19,34 @@ def _validate_vin(value: str) -> str:
             "Invalid VIN. It must be 17 alphanumeric characters "
             "(excluding the letters I, O and Q)."
         )
+    return value
+
+
+def _validate_webhook_url(value: str) -> str:
+    """Reject webhook URLs that resolve to internal/private hosts (SSRF guard).
+
+    The URL is client-provided and the server later POSTs to it, so an attacker
+    could otherwise make it hit the internal network (metadata endpoints, DBs…).
+    """
+    if not value:
+        return value
+    parsed = urlparse(value)
+    if parsed.scheme not in ("http", "https"):
+        raise serializers.ValidationError("The webhook URL must be http(s).")
+    host = parsed.hostname
+    if not host:
+        raise serializers.ValidationError("Invalid webhook URL.")
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror as exc:
+        raise serializers.ValidationError("Could not resolve the webhook host.") from exc
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            raise serializers.ValidationError(
+                "The webhook URL may not point to an internal/private address."
+            )
     return value
 
 
@@ -83,7 +114,7 @@ class ScrapeJobSerializer(serializers.ModelSerializer):
         model = ScrapeJob
         fields = [
             "id", "make", "model", "year", "trim", "vin",
-            "status", "attempts", "last_error",
+            "status", "attempts",
             "created_at", "started_at", "finished_at",
         ]
         read_only_fields = fields
@@ -104,6 +135,9 @@ class VinLookupSerializer(serializers.Serializer):
     def validate_vin(self, value: str) -> str:
         return _validate_vin(value)
 
+    def validate_webhook_url(self, value: str) -> str:
+        return _validate_webhook_url(value)
+
 
 class VinBatchSerializer(serializers.Serializer):
     """Validates a list of VINs to prewarm (proactive scraping)."""
@@ -118,6 +152,9 @@ class VinBatchSerializer(serializers.Serializer):
     def validate_vins(self, value: list[str]) -> list[str]:
         return [_validate_vin(v) for v in value]
 
+    def validate_webhook_url(self, value: str) -> str:
+        return _validate_webhook_url(value)
+
 
 class ModelLookupSerializer(serializers.Serializer):
     """Validates a model lookup (search by make/model/year, no VIN needed)."""
@@ -128,3 +165,6 @@ class ModelLookupSerializer(serializers.Serializer):
     webhook_url = serializers.URLField(required=False, allow_blank=True, default="")
     # force=True re-scrapes even if cached data is fresh (admin "re-scrape" button).
     force = serializers.BooleanField(required=False, default=False)
+
+    def validate_webhook_url(self, value: str) -> str:
+        return _validate_webhook_url(value)

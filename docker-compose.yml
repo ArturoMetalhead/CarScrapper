@@ -1,0 +1,55 @@
+# Despliegue de CarScrapper: app web (gunicorn + WhiteNoise) + PostgreSQL.
+#
+# Uso:
+#   1) Ajusta .env.production (SECRET_KEY, ALLOWED_HOSTS, CSRF_TRUSTED_ORIGINS, ...).
+#   2) Define la clave de Postgres (misma en db y en la DATABASE_URL de web):
+#        export POSTGRES_PASSWORD=una-clave-fuerte
+#   3) docker compose up -d --build
+#
+# El worker de scraping NO está aquí (nodriver + Chrome + IP residencial). Córrelo
+# en la máquina con IP residencial:
+#   DJANGO_ENV=production python manage.py run_scrape_worker
+#
+# Perillas que DevOps ajusta sin editar este archivo (env del shell o un .env junto
+# a este compose — ese .env es de docker-compose, distinto de los .env de Django):
+#   WEB_PORT           Puerto del servidor donde se expone la web   (por defecto 8000)
+#   PORT               Puerto interno del contenedor                (por defecto 8000)
+#   WEB_CONCURRENCY    Nº de workers de gunicorn                    (por defecto 3)
+#   POSTGRES_PASSWORD  Clave de Postgres                            (por defecto 'carscrapper')
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: carscrapper
+      POSTGRES_USER: carscrapper
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-carscrapper}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U carscrapper -d carscrapper"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  web:
+    build: .
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      DJANGO_ENV: production
+      # Apunta al servicio 'db' con la misma clave (sobrescribe la DATABASE_URL
+      # que hubiera en .env.production).
+      DATABASE_URL: postgres://carscrapper:${POSTGRES_PASSWORD:-carscrapper}@db:5432/carscrapper
+      # Ajustes de gunicorn (los lee gunicorn.conf.py).
+      PORT: ${PORT:-8000}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-3}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      # host:contenedor — cambia WEB_PORT para exponerlo en otro puerto del servidor.
+      - "${WEB_PORT:-8000}:${PORT:-8000}"
+
+volumes:
+  pgdata:

@@ -4,6 +4,7 @@ Django settings for the CarScrapper project.
 Based on Django 6.0. Sensitive values are read from a .env file (see
 .env.example) using django-environ.
 """
+import os
 from pathlib import Path
 
 import environ
@@ -15,9 +16,15 @@ env = environ.Env(
     ALLOWED_HOSTS=(list, ["127.0.0.1", "localhost"]),
     CORS_ALLOWED_ORIGINS=(list, []),
 )
-# Read the .env file if present (development). In production, use real system
-# environment variables.
-environ.Env.read_env(BASE_DIR / ".env")
+# Load the env file for the selected environment. DJANGO_ENV=production loads
+# .env.production; anything else (the default) loads .env.development. Both are
+# private (gitignored); .env.example is the committed reference. Falls back to a
+# plain .env, and finally to the real OS environment variables.
+DJANGO_ENV = os.environ.get("DJANGO_ENV", "development")
+for _env_file in (BASE_DIR / f".env.{DJANGO_ENV}", BASE_DIR / ".env"):
+    if _env_file.exists():
+        environ.Env.read_env(_env_file)
+        break
 
 SECRET_KEY = env("SECRET_KEY", default="dev-insecure-change-me")
 DEBUG = env("DEBUG")
@@ -41,6 +48,9 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    # Serves static files from the app itself (so DEBUG=False still serves the
+    # admin CSS). Must go right after SecurityMiddleware.
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -103,8 +113,31 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+# WhiteNoise serves the collected static files from the app, so DEBUG=False
+# still serves the admin CSS (no dev static handler needed). Run `collectstatic`.
+# The compressed-manifest backend fingerprints files for far-future caching.
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
+}
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# --- Production hardening (only applied when DEBUG is False) -------------------
+# Extra origins allowed to POST (admin/login over HTTPS behind a domain).
+CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=[])
+if not DEBUG:
+    # App runs behind a TLS-terminating proxy (nginx / load balancer).
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    # These need real HTTPS; default OFF so a local DEBUG=False run over http
+    # still works. Turn them ON in the server env (.env.production).
+    SECURE_SSL_REDIRECT = env.bool("SECURE_SSL_REDIRECT", default=False)
+    SESSION_COOKIE_SECURE = env.bool("SESSION_COOKIE_SECURE", default=False)
+    CSRF_COOKIE_SECURE = env.bool("CSRF_COOKIE_SECURE", default=False)
+    SECURE_HSTS_SECONDS = env.int("SECURE_HSTS_SECONDS", default=0)
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = env.bool("SECURE_HSTS_INCLUDE_SUBDOMAINS", default=True)
+    SECURE_HSTS_PRELOAD = env.bool("SECURE_HSTS_PRELOAD", default=True)
 
 REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": [

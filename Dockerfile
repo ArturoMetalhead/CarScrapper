@@ -1,10 +1,15 @@
-# CarScrapper — imagen de PRODUCCIÓN de la app web / API / admin (gunicorn).
+# ============================================================================
+# CarScrapper — imagen multi-stage.
+#   target `web`    : app web / API / admin con gunicorn + WhiteNoise (ligera).
+#   target `worker` : worker de scraping (nodriver + Chrome + Xvfb).
 #
-# OJO con el scraper: el worker usa nodriver + Chrome real y necesita una IP
-# RESIDENCIAL (DataDome bloquea IPs de datacenter). Por eso esta imagen NO trae
-# Chrome y el worker/crawler vienen apagados en .env.production. Corre el worker
-# en la máquina con IP residencial:  python manage.py run_scrape_worker
-FROM python:3.13-slim
+# IMPORTANTE (worker): el scraping necesita una IP RESIDENCIAL. En un servidor
+# cloud (IP de datacenter) DataDome lo bloquea igual; usa un proxy residencial
+# (SCRAPER_PROXY) o corre el worker en la máquina con IP residencial.
+# ============================================================================
+
+# ---- Base: Python + dependencias + código + estáticos (compartida) ----------
+FROM python:3.13-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -13,25 +18,39 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# curl para el HEALTHCHECK; sin toolchain de compilación (psycopg[binary] no lo necesita).
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Dependencias Python primero (mejor caché de capas).
 COPY requirements.txt requirements-prod.txt ./
 RUN pip install -r requirements-prod.txt
 
-# Código de la app.
 COPY . .
 
-# Recoge los estáticos (WhiteNoise los sirve). No necesita BD ni secretos:
-# settings usa valores por defecto seguros durante el build.
-RUN python manage.py collectstatic --noinput
+# Estáticos (WhiteNoise los sirve). No necesita BD ni secretos en el build.
+RUN python manage.py collectstatic --noinput \
+    && chmod +x /app/entrypoint.sh /app/worker-entrypoint.sh
 
-# entrypoint ejecutable + usuario no-root.
-RUN chmod +x /app/entrypoint.sh \
-    && useradd -m -u 10001 appuser \
-    && chown -R appuser:appuser /app
+# ---- Worker: añade Chrome (chromium) + Xvfb para nodriver -------------------
+FROM base AS worker
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        chromium xvfb fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
+
+# Le decimos a nodriver qué binario usar y que lance Chrome apto para contenedor.
+ENV SCRAPER_NODRIVER_BINARY=/usr/bin/chromium \
+    SCRAPER_NODRIVER_NO_SANDBOX=True \
+    DISPLAY=:99
+
+# Corre como root: Chrome (--no-sandbox) y el perfil montado necesitan escribir.
+# El entrypoint arranca Xvfb (display virtual) y luego el worker.
+ENTRYPOINT ["/app/worker-entrypoint.sh"]
+CMD ["python", "manage.py", "run_scrape_worker"]
+
+# ---- Web (target por defecto): gunicorn + WhiteNoise, sin Chrome, no-root ---
+FROM base AS web
+
+RUN useradd -m -u 10001 appuser && chown -R appuser:appuser /app
 USER appuser
 
 # Puerto interno por defecto (DevOps lo cambia con la env PORT; ver gunicorn.conf.py).

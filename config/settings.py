@@ -203,6 +203,10 @@ SCRAPER_NODRIVER_HIDE_WINDOW = env.bool("SCRAPER_NODRIVER_HIDE_WINDOW", default=
 SCRAPER_NODRIVER_RETRIES = env.int("SCRAPER_NODRIVER_RETRIES", default=3)
 # Seconds to wait after navigating, so the JS challenge settles.
 SCRAPER_NODRIVER_SETTLE = env.int("SCRAPER_NODRIVER_SETTLE", default=6)
+# Container-only: Chrome needs --no-sandbox/--disable-dev-shm-usage to launch
+# inside Docker, and an explicit binary path. Set in the worker image, not locally.
+SCRAPER_NODRIVER_NO_SANDBOX = env.bool("SCRAPER_NODRIVER_NO_SANDBOX", default=False)
+SCRAPER_NODRIVER_BINARY = env("SCRAPER_NODRIVER_BINARY", default="")
 
 # Edmunds: overlay REAL market data from the /for-sale/ inventory page (min from
 # actual listings + "Average price"). Adds a 2nd page fetch per model; set False

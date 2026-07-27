@@ -33,7 +33,9 @@ services:
       retries: 12
 
   web:
-    build: .
+    build:
+      context: .
+      target: web
     restart: unless-stopped
     env_file: .env.production
     environment:
@@ -51,5 +53,31 @@ services:
       # host:contenedor — cambia WEB_PORT para exponerlo en otro puerto del servidor.
       - "${WEB_PORT:-8000}:${PORT:-8000}"
 
+  # Worker de scraping (nodriver + Chrome). OPT-IN: solo arranca con
+  #   docker compose --profile worker up -d
+  # Requiere IP RESIDENCIAL (o SCRAPER_PROXY residencial en .env.production).
+  # Ideal correrlo en tu máquina residencial; en un servidor cloud DataDome bloquea.
+  worker:
+    build:
+      context: .
+      target: worker
+    restart: unless-stopped
+    profiles: ["worker"]
+    env_file: .env.production
+    environment:
+      DJANGO_ENV: production
+      DATABASE_URL: postgres://carscrapper:${POSTGRES_PASSWORD:-carscrapper}@db:5432/carscrapper
+      # Se lanza por comando (run_scrape_worker), no por el autostart del app-init.
+      SCRAPER_WORKER_AUTOSTART: "False"
+    depends_on:
+      db:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    volumes:
+      # Perfil de Chrome persistente: acumula la cookie/"confianza" de DataDome.
+      - chrome_profile:/app/.chrome_profile_scraper
+
 volumes:
   pgdata:
+  chrome_profile:

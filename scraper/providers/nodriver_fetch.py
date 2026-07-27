@@ -207,11 +207,23 @@ class NodriverFetchMixin:
             if server:
                 browser_args.append(f"--proxy-server={server}")
 
-        browser = await uc.start(
-            headless=self._headless,
-            user_data_dir=self._profile_dir,
-            browser_args=browser_args,
-        )
+        # In a container Chrome can't use its sandbox (no user namespace) and the
+        # default /dev/shm is tiny; without these it fails to launch. Enabled via
+        # env in the worker image (SCRAPER_NODRIVER_NO_SANDBOX).
+        if getattr(settings, "SCRAPER_NODRIVER_NO_SANDBOX", False):
+            browser_args += ["--no-sandbox", "--disable-dev-shm-usage"]
+
+        start_kwargs = {
+            "headless": self._headless,
+            "user_data_dir": self._profile_dir,
+            "browser_args": browser_args,
+        }
+        # Explicit Chrome/Chromium binary (e.g. /usr/bin/chromium inside Docker).
+        binary = getattr(settings, "SCRAPER_NODRIVER_BINARY", "")
+        if binary:
+            start_kwargs["browser_executable_path"] = binary
+
+        browser = await uc.start(**start_kwargs)
         try:
             page = await browser.get(url)
             html = ""

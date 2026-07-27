@@ -84,19 +84,41 @@ El resto (dominios, claves, HTTPS) va en **`.env.production`** — ese es el arc
 
 ---
 
-## El worker de scraping (IP residencial)
+## El worker de scraping
 
-En tu máquina con IP residencial y Chrome instalado (tu escritorio), apuntando a la
-**misma base de datos** que la web:
+> ⚠️ **Necesita una IP RESIDENCIAL.** El worker usa un Chrome real; DataDome
+> bloquea IPs de datacenter. En un servidor cloud **no funcionará** salvo que
+> uses un **proxy residencial** (`SCRAPER_PROXY` en `.env.production`). Lo normal
+> es correr el worker en una máquina con IP residencial (tu escritorio).
 
+El contenedor **web NO scrapea** (`SCRAPER_WORKER_AUTOSTART=False`). El worker es
+un servicio aparte que apunta a la **misma base de datos**. Tres formas:
+
+**A) Worker en Docker (mismo compose, opt-in).** La imagen `worker` ya trae
+Chromium + Xvfb. Arranca web + db + worker juntos en tu máquina residencial:
 ```bash
-export DJANGO_ENV=production        # Windows: $env:DJANGO_ENV="production"
+docker compose --profile worker up -d --build
+```
+(sin `--profile worker`, solo levanta web + db, ideal para el servidor cloud.)
+
+**B) Worker en Docker apuntando a un Postgres remoto** (web en el cloud, worker en
+tu escritorio):
+```bash
+docker compose --profile worker run --rm \
+  -e DATABASE_URL=postgres://carscrapper:CLAVE@IP_DEL_SERVIDOR:5432/carscrapper \
+  worker
+```
+
+**C) Worker nativo** (sin Docker), con tu Chrome instalado:
+```bash
+export DJANGO_ENV=production          # Windows: $env:DJANGO_ENV="production"
 export DATABASE_URL=postgres://carscrapper:...@IP_DEL_SERVIDOR:5432/carscrapper
 python manage.py run_scrape_worker
 ```
 
-Alternativa: dejar todo (web + worker) en el escritorio con `.env.development` y
-`SCRAPER_WORKER_AUTOSTART=True` — es lo que ya tienes en local.
+En cualquiera de las tres, el worker toma los trabajos `pending`, scrapea y llena
+la caché que la web sirve. La primera vez, el perfil de Chrome se "calienta"
+(acumula la cookie de DataDome); dale bajo volumen.
 
 ---
 

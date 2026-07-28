@@ -225,10 +225,11 @@ SCRAPER_EDMUNDS_MIN_LISTINGS = env.int("SCRAPER_EDMUNDS_MIN_LISTINGS", default=5
 # True = 2 inventory requests (real min AND max); False = 1 (ascending only,
 # uses the MSRP top for the maximum). More requests = higher block risk.
 SCRAPER_EDMUNDS_INVENTORY_BOTH_ENDS = env.bool("SCRAPER_EDMUNDS_INVENTORY_BOTH_ENDS", default=True)
-# Plausible car-price band (USD) used to filter noise when aggregating listings.
-# Default max is 500k to cover luxury/exotics; raise it further if needed.
+# Plausible car-price band (USD) used only to drop garbage/mis-parsed numbers when
+# aggregating listings. The max is a high safety ceiling (10M) — NOT a real price
+# cap — so exotics/collectors (e.g. a $1.4M Porsche) show their true top price.
 SCRAPER_PRICE_MIN = env.int("SCRAPER_PRICE_MIN", default=1000)
-SCRAPER_PRICE_MAX = env.int("SCRAPER_PRICE_MAX", default=500000)
+SCRAPER_PRICE_MAX = env.int("SCRAPER_PRICE_MAX", default=10_000_000)
 
 # Timeout for NHTSA VIN decoding.
 SCRAPER_VIN_DECODE_TIMEOUT = env.int("SCRAPER_VIN_DECODE_TIMEOUT", default=15)

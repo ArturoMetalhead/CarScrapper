@@ -77,6 +77,22 @@ def reset_profile() -> bool:
         return False
 
 
+def clear_singleton_lock(path: str | None = None) -> None:
+    """Remove Chrome's SingletonLock/Socket/Cookie from the profile.
+
+    Chrome refuses to launch ("profile appears to be in use") if a stale lock is
+    left behind — after a crash, or when a PERSISTENT profile is reused across
+    container restarts (the lock references the old host/pid). The single-worker
+    design means nothing else is really using the profile, so clearing it is safe.
+    """
+    path = path or profile_dir()
+    for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        try:
+            os.remove(os.path.join(path, name))
+        except OSError:
+            pass
+
+
 class NodriverFetchMixin:
     """Provides a `fetch` that renders with a real Chrome via nodriver.
 
@@ -228,6 +244,10 @@ class NodriverFetchMixin:
         # env in the worker image (SCRAPER_NODRIVER_NO_SANDBOX).
         if getattr(settings, "SCRAPER_NODRIVER_NO_SANDBOX", False):
             browser_args += ["--no-sandbox", "--disable-dev-shm-usage"]
+
+        # A stale SingletonLock (from a crash, or a container restart reusing a
+        # persistent profile) makes Chrome refuse to launch. Clear it first.
+        clear_singleton_lock(self._profile_dir)
 
         start_kwargs = {
             "headless": self._headless,

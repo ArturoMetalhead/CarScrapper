@@ -134,7 +134,13 @@ class BaseProvider:
     def parse_model(
         self, response, make: str, model: str, year: int | None = None, trim: str = ""
     ) -> ScrapedVehicle:
-        raise NotImplementedError
+        # Model scraping needs a DEDICATED provider (edmunds/cargurus); the
+        # 'generic' provider only supports VIN scraping. Raise a source error (not
+        # NotImplementedError) so the service treats it as a clean source failure
+        # and moves on to the next source instead of logging an "unexpected error".
+        raise ScraperError(
+            f"Provider '{self.source.provider_key}' does not support model scraping."
+        )
 
     def build_session(self) -> requests.Session:
         session = requests.Session()

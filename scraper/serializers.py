@@ -145,7 +145,9 @@ class VinBatchSerializer(serializers.Serializer):
     vins = serializers.ListField(
         child=serializers.CharField(max_length=17, min_length=17),
         allow_empty=False,
-        max_length=500,
+        # Kept small: each VIN is decoded synchronously (NHTSA) inside the request,
+        # so a big batch would exceed the gunicorn timeout and get the worker killed.
+        max_length=25,
     )
     webhook_url = serializers.URLField(required=False, allow_blank=True, default="")
 

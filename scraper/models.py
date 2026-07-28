@@ -41,7 +41,9 @@ class ScraperSource(models.Model):
         default="",
         help_text=(
             "Path to query by MODEL (used by the background scraping). "
-            "Placeholders: {make} {model} {year} {trim}. e.g. /{make}/{model}/{year}/"
+            "Placeholders: {make} {model} {year} {trim}. e.g. /{make}/{model}/{year}/. "
+            "NOTE: model scraping requires a DEDICATED provider (edmunds/cargurus); "
+            "the 'generic' provider only supports VIN scraping."
         ),
     )
 
@@ -159,6 +161,9 @@ class VehicleModel(models.Model):
     )
     source_url = models.URLField("URL de la fuente", max_length=500, blank=True)
     raw_data = models.JSONField("Datos crudos", default=dict, blank=True)
+    # Consecutive scrape failures; the crawler dead-letters a model past the
+    # configured threshold (SCRAPER_MODEL_MAX_FAILURES). A success resets it to 0.
+    scrape_failures = models.PositiveIntegerField("Fallos de scraping", default=0)
 
     created_at = models.DateTimeField("Creado", auto_now_add=True)
     updated_at = models.DateTimeField("Actualizado", auto_now=True)

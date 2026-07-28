@@ -20,7 +20,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone
 
 from .models import ScrapeJob, ScraperSource, ScrapeSubscriber, Vehicle, VehicleModel
@@ -42,6 +42,7 @@ __all__ = [
     "scrape_model_data",
     "enqueue_scrape",
     "apply_model_to_vehicles",
+    "mark_model_failure",
     "is_fresh",
     "AllSourcesFailed",
     "ScraperError",
@@ -327,6 +328,7 @@ def scrape_model_data(
             "source": source,
             "source_url": result.source_url,
             "raw_data": result.raw_data,
+            "scrape_failures": 0,  # success clears the dead-letter counter
         }
         # Case-insensitive upsert. NHTSA returns UPPERCASE makes ("HONDA") while
         # model searches carry the user's casing ("honda"/"Honda"); a plain
@@ -356,3 +358,16 @@ def scrape_model_data(
     if blocked_any:
         raise BlockedError(f"All sources blocked or empty for {make} {model} {year}.")
     raise AllSourcesFailed(f"{make} {model} {year}", errors)
+
+
+def mark_model_failure(make: str, model: str, year, trim: str = "") -> None:
+    """Bump a cached model's consecutive-failure counter (case-insensitive).
+
+    When it passes SCRAPER_MODEL_MAX_FAILURES the crawler stops auto-refreshing it
+    (a retired model would otherwise be re-scraped every cycle forever, burning IP
+    quota). A later successful scrape resets it to 0. No-op if not cached yet.
+    Uses .update() so it does NOT bump updated_at.
+    """
+    VehicleModel.objects.filter(
+        make__iexact=make, model__iexact=model, year=year, trim__iexact=trim
+    ).update(scrape_failures=F("scrape_failures") + 1)

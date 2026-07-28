@@ -31,6 +31,7 @@ from .services import (
     PRIORITY_ONDEMAND,
     AllSourcesFailed,
     apply_model_to_vehicles,
+    mark_model_failure,
     scrape_model_data,
 )
 
@@ -119,10 +120,24 @@ def process_job(job: ScrapeJob, log: LogFn = _noop) -> None:
             log("   BLOCKED (403) — on-demand failed fast.")
             webhooks.notify(job, error=True)
         else:
-            job.status = ScrapeJob.Status.PENDING
-            job.started_at = None
-            job.save(update_fields=["status", "started_at"])
-            log("   BLOCKED (403) — requeued; backing off.")
+            # Background job: count the block so a persistently-blocked phantom
+            # model doesn't bounce forever, re-hitting (and re-flagging) the source
+            # after every cooldown. Respect max_attempts (crawl=1) like the
+            # AllSourcesFailed path does.
+            job.attempts += 1
+            if job.attempts >= max_attempts:
+                job.status = ScrapeJob.Status.FAILED
+                job.last_error = "Blocked (403) — giving up after repeated blocks."
+                job.finished_at = timezone.now()
+                job.save(update_fields=["status", "attempts", "last_error", "finished_at"])
+                mark_model_failure(job.make, job.model, job.year, job.trim)
+                log(f"   BLOCKED (403) x{job.attempts}/{max_attempts} — giving up.")
+                webhooks.notify(job, error=True)
+            else:
+                job.status = ScrapeJob.Status.PENDING
+                job.started_at = None
+                job.save(update_fields=["status", "attempts", "started_at"])
+                log(f"   BLOCKED (403) — requeued ({job.attempts}/{max_attempts}); backing off.")
         raise
     except AllSourcesFailed as exc:
         job.attempts += 1
@@ -131,6 +146,7 @@ def process_job(job: ScrapeJob, log: LogFn = _noop) -> None:
             job.status = ScrapeJob.Status.FAILED
             job.finished_at = timezone.now()
             job.save(update_fields=["status", "attempts", "last_error", "finished_at"])
+            mark_model_failure(job.make, job.model, job.year, job.trim)
             log(f"   FAILED after {job.attempts} attempts: {exc}")
             webhooks.notify(job, error=True)
         else:
@@ -145,6 +161,7 @@ def process_job(job: ScrapeJob, log: LogFn = _noop) -> None:
         job.last_error = f"Unexpected error: {exc}"
         job.finished_at = timezone.now()
         job.save(update_fields=["status", "attempts", "last_error", "finished_at"])
+        mark_model_failure(job.make, job.model, job.year, job.trim)
         logger.exception("Unexpected error processing job %s", job.pk)
         log(f"   Unexpected ERROR: {exc}")
         webhooks.notify(job, error=True)
@@ -247,13 +264,21 @@ def run_loop(
         WORKER_STATE["consecutive_blocks"] = 0
         WORKER_STATE["block_phase"] = None
 
-        # Throttle only for background politeness — NEVER delay a user search:
-        # skip the wait if this job was on-demand or another one is waiting.
+        # Throttle only for background politeness — NEVER delay a user search.
+        # INTERRUPTIBLE: if a user (on-demand) search arrives during the wait,
+        # break out at once so it isn't stuck behind the (long) background throttle
+        # — otherwise it can exceed the dashboard's poll timeout and look "stuck".
         if not is_ondemand and not _has_pending_ondemand():
             delay = getattr(settings, "SCRAPER_WORKER_DELAY", 0)
-            if delay and not stop_event.is_set():
+            if delay:
                 jitter = delay * 0.3
-                stop_event.wait(max(1.0, delay + random.uniform(-jitter, jitter)))
+                remaining = max(1.0, delay + random.uniform(-jitter, jitter))
+                while remaining > 0 and not stop_event.is_set():
+                    if _has_pending_ondemand():
+                        break
+                    step = min(3, remaining)
+                    stop_event.wait(step)
+                    remaining -= step
 
 
 class WorkerController:

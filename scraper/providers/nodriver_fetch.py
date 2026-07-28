@@ -136,6 +136,12 @@ class NodriverFetchMixin:
     def _settle(self) -> int:
         return max(1, getattr(settings, "SCRAPER_NODRIVER_SETTLE", 6))
 
+    @property
+    def _hard_timeout(self) -> int:
+        """Absolute cap (s) for one render, so a hung Chrome can't freeze the
+        single worker thread indefinitely."""
+        return max(30, getattr(settings, "SCRAPER_NODRIVER_HARD_TIMEOUT", 120))
+
     def _render(self, url: str, wait_selector: str | None = None) -> RenderedResponse:
         try:
             import nodriver  # noqa: F401
@@ -149,9 +155,19 @@ class NodriverFetchMixin:
         loop = asyncio.new_event_loop()
         try:
             asyncio.set_event_loop(loop)
-            return loop.run_until_complete(self._render_async(url, wait_selector))
+            # Hard cap: if Chrome hangs, wait_for cancels _render_async (whose
+            # `finally: browser.stop()` kills Chrome) instead of blocking forever.
+            return loop.run_until_complete(
+                asyncio.wait_for(
+                    self._render_async(url, wait_selector), timeout=self._hard_timeout
+                )
+            )
         except ScraperError:
             raise
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            raise ScraperError(
+                f"nodriver render timed out after {self._hard_timeout}s at {url}"
+            ) from exc
         except Exception as exc:  # noqa: BLE001 — normalize any browser failure
             raise ScraperError(f"nodriver error at {url}: {exc}") from exc
         finally:

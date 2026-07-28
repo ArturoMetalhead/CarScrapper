@@ -212,6 +212,9 @@ SCRAPER_NODRIVER_SETTLE = env.int("SCRAPER_NODRIVER_SETTLE", default=6)
 # inside Docker, and an explicit binary path. Set in the worker image, not locally.
 SCRAPER_NODRIVER_NO_SANDBOX = env.bool("SCRAPER_NODRIVER_NO_SANDBOX", default=False)
 SCRAPER_NODRIVER_BINARY = env("SCRAPER_NODRIVER_BINARY", default="")
+# Absolute cap (s) for a single nodriver render. Prevents a hung Chrome from
+# freezing the (single) worker thread forever.
+SCRAPER_NODRIVER_HARD_TIMEOUT = env.int("SCRAPER_NODRIVER_HARD_TIMEOUT", default=120)
 
 # Edmunds: overlay REAL market data from the /for-sale/ inventory page (min from
 # actual listings + "Average price"). Adds a 2nd page fetch per model; set False
@@ -232,6 +235,9 @@ SCRAPER_VIN_DECODE_TIMEOUT = env.int("SCRAPER_VIN_DECODE_TIMEOUT", default=15)
 # Hours a market data row (VehicleModel) is considered fresh before requeueing
 # its re-scraping.
 SCRAPER_CACHE_TTL_HOURS = env.int("SCRAPER_CACHE_TTL_HOURS", default=24)
+# Dead-letter: after this many consecutive scrape failures a VehicleModel stops
+# being auto-refreshed (a retired model would otherwise burn IP quota forever).
+SCRAPER_MODEL_MAX_FAILURES = env.int("SCRAPER_MODEL_MAX_FAILURES", default=5)
 # Worker: starts alongside the API (background thread). Set to False to run it
 # separately with `manage.py run_scrape_worker`.
 SCRAPER_WORKER_AUTOSTART = env.bool("SCRAPER_WORKER_AUTOSTART", default=True)

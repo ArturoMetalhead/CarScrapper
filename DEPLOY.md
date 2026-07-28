@@ -104,10 +104,12 @@ docker compose --profile worker up -d --build
 **B) Worker en Docker apuntando a un Postgres remoto** (web en el cloud, worker en
 tu escritorio):
 ```bash
-docker compose --profile worker run --rm \
+docker compose --profile worker run --rm --no-deps \
   -e DATABASE_URL=postgres://carscrapper:CLAVE@IP_DEL_SERVIDOR:5432/carscrapper \
   worker
 ```
+> `--no-deps` es importante: sin él, `compose run` también levantaría `db` y `web`
+> locales (Postgres vacío + web duplicado) aunque tu BD real sea remota.
 
 **C) Worker nativo** (sin Docker), con tu Chrome instalado:
 ```bash

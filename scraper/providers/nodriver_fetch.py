@@ -69,12 +69,32 @@ def reset_profile() -> bool:
     import shutil
 
     path = profile_dir()
+    clear_singleton_lock(path)  # drop the lock handle first so Windows can delete it
     try:
         shutil.rmtree(path, ignore_errors=True)
         os.makedirs(path, exist_ok=True)
-        return True
+        # Report success only if the profile is REALLY empty. On Windows a Chrome
+        # file lock can leave files behind (rmtree ignore_errors swallows it); an
+        # unconditional True would lie ("Fresh profile") and reuse a banned cookie.
+        return not any(os.scandir(path))
     except Exception:  # noqa: BLE001 — best-effort
         return False
+
+
+def clear_singleton_lock(path: str | None = None) -> None:
+    """Remove Chrome's SingletonLock/Socket/Cookie from the profile.
+
+    Chrome refuses to launch ("profile appears to be in use") if a stale lock is
+    left behind — after a crash, or when a PERSISTENT profile is reused across
+    container restarts (the lock references the old host/pid). The single-worker
+    design means nothing else is really using the profile, so clearing it is safe.
+    """
+    path = path or profile_dir()
+    for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        try:
+            os.remove(os.path.join(path, name))
+        except OSError:
+            pass
 
 
 class NodriverFetchMixin:
@@ -136,6 +156,12 @@ class NodriverFetchMixin:
     def _settle(self) -> int:
         return max(1, getattr(settings, "SCRAPER_NODRIVER_SETTLE", 6))
 
+    @property
+    def _hard_timeout(self) -> int:
+        """Absolute cap (s) for one render, so a hung Chrome can't freeze the
+        single worker thread indefinitely."""
+        return max(30, getattr(settings, "SCRAPER_NODRIVER_HARD_TIMEOUT", 120))
+
     def _render(self, url: str, wait_selector: str | None = None) -> RenderedResponse:
         try:
             import nodriver  # noqa: F401
@@ -149,9 +175,19 @@ class NodriverFetchMixin:
         loop = asyncio.new_event_loop()
         try:
             asyncio.set_event_loop(loop)
-            return loop.run_until_complete(self._render_async(url, wait_selector))
+            # Hard cap: if Chrome hangs, wait_for cancels _render_async (whose
+            # `finally: browser.stop()` kills Chrome) instead of blocking forever.
+            return loop.run_until_complete(
+                asyncio.wait_for(
+                    self._render_async(url, wait_selector), timeout=self._hard_timeout
+                )
+            )
         except ScraperError:
             raise
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            raise ScraperError(
+                f"nodriver render timed out after {self._hard_timeout}s at {url}"
+            ) from exc
         except Exception as exc:  # noqa: BLE001 — normalize any browser failure
             raise ScraperError(f"nodriver error at {url}: {exc}") from exc
         finally:
@@ -207,11 +243,27 @@ class NodriverFetchMixin:
             if server:
                 browser_args.append(f"--proxy-server={server}")
 
-        browser = await uc.start(
-            headless=self._headless,
-            user_data_dir=self._profile_dir,
-            browser_args=browser_args,
-        )
+        # In a container Chrome can't use its sandbox (no user namespace) and the
+        # default /dev/shm is tiny; without these it fails to launch. Enabled via
+        # env in the worker image (SCRAPER_NODRIVER_NO_SANDBOX).
+        if getattr(settings, "SCRAPER_NODRIVER_NO_SANDBOX", False):
+            browser_args += ["--no-sandbox", "--disable-dev-shm-usage"]
+
+        # A stale SingletonLock (from a crash, or a container restart reusing a
+        # persistent profile) makes Chrome refuse to launch. Clear it first.
+        clear_singleton_lock(self._profile_dir)
+
+        start_kwargs = {
+            "headless": self._headless,
+            "user_data_dir": self._profile_dir,
+            "browser_args": browser_args,
+        }
+        # Explicit Chrome/Chromium binary (e.g. /usr/bin/chromium inside Docker).
+        binary = getattr(settings, "SCRAPER_NODRIVER_BINARY", "")
+        if binary:
+            start_kwargs["browser_executable_path"] = binary
+
+        browser = await uc.start(**start_kwargs)
         try:
             page = await browser.get(url)
             html = ""

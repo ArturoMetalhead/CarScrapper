@@ -1,5 +1,6 @@
 """Root URL routes for the CarScrapper project."""
 from django.contrib import admin
+from django.contrib.admin.views.decorators import staff_member_required
 from django.urls import include, path
 from django.views.decorators.cache import never_cache
 from django.views.generic import TemplateView
@@ -13,7 +14,12 @@ urlpatterns = [
     # Customer-facing search page + internal ops panel (both call the API).
     # never_cache so the browser always loads the latest template (no stale UI).
     path("", never_cache(TemplateView.as_view(template_name="dashboard.html")), name="dashboard"),
-    path("panel/", never_cache(TemplateView.as_view(template_name="panel.html")), name="panel"),
+    # Ops panel: staff-only (redirects to the admin login if not authenticated).
+    path(
+        "panel/",
+        staff_member_required(never_cache(TemplateView.as_view(template_name="panel.html"))),
+        name="panel",
+    ),
     path("admin/", admin.site.urls),
     path("api/", include("scraper.urls")),
     # OpenAPI schema + interactive docs.

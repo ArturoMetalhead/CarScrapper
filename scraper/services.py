@@ -20,7 +20,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone
 
 from .models import ScrapeJob, ScraperSource, ScrapeSubscriber, Vehicle, VehicleModel
@@ -42,6 +42,7 @@ __all__ = [
     "scrape_model_data",
     "enqueue_scrape",
     "apply_model_to_vehicles",
+    "mark_model_failure",
     "is_fresh",
     "AllSourcesFailed",
     "ScraperError",
@@ -287,8 +288,70 @@ def scrape_model_data(
             f"{make} {model}", {"config": "No sources with model scraping."}
         )
 
+    def _persist(source, result):
+        """Upsert (case-insensitive) the VehicleModel for a winning scrape result."""
+        # Keep the headline (estimated) price WITHIN the shown range. Some sources
+        # (e.g. Edmunds' new-car MSRP midpoint vs a thin used-listing range) can put
+        # the suggested price outside [low, high]; widen the range to include it
+        # instead of persisting an inverted min/max.
+        if result.price_low is not None and result.price_high is not None:
+            result.price_low = min(result.price_low, result.estimated_price)
+            result.price_high = max(result.price_high, result.estimated_price)
+
+        defaults = {
+            "estimated_price": result.estimated_price,
+            "price_low": result.price_low,
+            "price_high": result.price_high,
+            "price_kind": result.price_kind,
+            "currency": result.currency or "USD",
+            "source": source,
+            "source_url": result.source_url,
+            "raw_data": result.raw_data,
+            "scrape_failures": 0,  # success clears the dead-letter counter
+        }
+        # Case-insensitive upsert. NHTSA returns UPPERCASE makes ("HONDA") while
+        # model searches carry the user's casing ("honda"/"Honda"); a plain
+        # update_or_create (exact match) would then create duplicate rows for the
+        # same car. Reuse any existing row for this make/model/year (trim="" =
+        # model-year granularity) regardless of case, so there is exactly one.
+        vm = (
+            VehicleModel.objects.filter(
+                make__iexact=make, model__iexact=model, year=year, trim__iexact=trim
+            )
+            .order_by("id")
+            .first()
+        )
+        if vm is None:
+            try:
+                vm = VehicleModel.objects.create(
+                    make=make, model=model, year=year, trim=trim, **defaults
+                )
+                logger.info(
+                    "Model %s %s %s resolved by '%s'.", year, make, model, source.name
+                )
+                return vm
+            except IntegrityError:
+                # Otra petición concurrente insertó esta fila primero (posiblemente
+                # con otra capitalización) y el índice único case-insensitive la
+                # rechazó. Reutiliza la existente en vez de propagar el error como
+                # un job FAILED espurio. Relevante bajo multi-worker.
+                vm = (
+                    VehicleModel.objects.filter(
+                        make__iexact=make, model__iexact=model, year=year, trim__iexact=trim
+                    )
+                    .order_by("id")
+                    .first()
+                )
+        if vm is not None:
+            for field, value in defaults.items():
+                setattr(vm, field, value)
+            vm.save()
+        logger.info("Model %s %s %s resolved by '%s'.", year, make, model, source.name)
+        return vm
+
     errors: dict[str, str] = {}
     blocked_any = False
+    fallback = None  # (source, result): a suggested price WITHOUT a min/max range
     label = " ".join(str(x) for x in (year, make, model) if x)
     for source in sources:
         _set_activity(label, source.name, blocked_any)
@@ -318,41 +381,37 @@ def scrape_model_data(
             errors[source.name] = "Could not extract the model price."
             continue
 
-        defaults = {
-            "estimated_price": result.estimated_price,
-            "price_low": result.price_low,
-            "price_high": result.price_high,
-            "price_kind": result.price_kind,
-            "currency": result.currency or "USD",
-            "source": source,
-            "source_url": result.source_url,
-            "raw_data": result.raw_data,
-        }
-        # Case-insensitive upsert. NHTSA returns UPPERCASE makes ("HONDA") while
-        # model searches carry the user's casing ("honda"/"Honda"); a plain
-        # update_or_create (exact match) would then create duplicate rows for the
-        # same car. Reuse any existing row for this make/model/year (trim="" =
-        # model-year granularity) regardless of case, so there is exactly one.
-        vm = (
-            VehicleModel.objects.filter(
-                make__iexact=make, model__iexact=model, year=year, trim__iexact=trim
-            )
-            .order_by("id")
-            .first()
-        )
-        if vm is not None:
-            for field, value in defaults.items():
-                setattr(vm, field, value)
-            vm.save()
-        else:
-            vm = VehicleModel.objects.create(
-                make=make, model=model, year=year, trim=trim, **defaults
-            )
-        logger.info("Model %s %s %s resolved by '%s'.", year, make, model, source.name)
-        return vm
+        # A source that returns a suggested price but NO min/max range (e.g. Edmunds'
+        # new-car "suggests you pay $X") is a WEAK result — the UI would show only the
+        # suggested value. Remember it, but keep trying another source (e.g. CarGurus)
+        # that also yields a real range, so the cached row isn't "suggested only".
+        if result.price_low is None or result.price_high is None:
+            errors.setdefault(source.name, "Only a suggested price (no min/max range).")
+            if fallback is None:
+                fallback = (source, result)
+            continue
 
-    # No source produced a price. If a source was blocked, signal the worker to
-    # back off / rotate (recover); otherwise it's a genuine not-found.
+        return _persist(source, result)
+
+    # No source gave a full range; use the best suggested-only result if we got one.
+    if fallback is not None:
+        return _persist(*fallback)
+
+    # Nothing at all. If a source was blocked, signal the worker to back off /
+    # rotate (recover); otherwise it's a genuine not-found.
     if blocked_any:
         raise BlockedError(f"All sources blocked or empty for {make} {model} {year}.")
     raise AllSourcesFailed(f"{make} {model} {year}", errors)
+
+
+def mark_model_failure(make: str, model: str, year, trim: str = "") -> None:
+    """Bump a cached model's consecutive-failure counter (case-insensitive).
+
+    When it passes SCRAPER_MODEL_MAX_FAILURES the crawler stops auto-refreshing it
+    (a retired model would otherwise be re-scraped every cycle forever, burning IP
+    quota). A later successful scrape resets it to 0. No-op if not cached yet.
+    Uses .update() so it does NOT bump updated_at.
+    """
+    VehicleModel.objects.filter(
+        make__iexact=make, model__iexact=model, year=year, trim__iexact=trim
+    ).update(scrape_failures=F("scrape_failures") + 1)

@@ -1,9 +1,12 @@
 """Scraper API views."""
+import logging
+
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.pagination import PageNumberPagination
+from rest_framework.permissions import AllowAny, IsAdminUser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -15,7 +18,7 @@ class RecentPagination(PageNumberPagination):
     page_size_query_param = "page_size"
     max_page_size = 100
 
-from .models import ScrapeJob, ScraperSource, Vehicle
+from .models import ScrapeJob, ScrapeSubscriber, ScraperSource, Vehicle
 from .serializers import (
     ModelLookupSerializer,
     ScraperSourceSerializer,
@@ -27,10 +30,13 @@ from .serializers import (
 )
 from .services import STATUS_READY, VinDecodeError, resolve_model, resolve_vin
 
+logger = logging.getLogger("scraper.worker")
+
 
 class HealthView(APIView):
     """Simple liveness endpoint."""
 
+    permission_classes = [AllowAny]
     throttle_classes = []
 
     @extend_schema(responses=OpenApiTypes.OBJECT)
@@ -49,6 +55,9 @@ class VehicleLookupView(APIView):
       respond 202 "processing". When the worker finishes it notifies via webhook;
       meanwhile the frontend can poll GET /api/vehicles/<vin>/.
     """
+
+    authentication_classes = []  # public: no session → no CSRF gate for customers
+    permission_classes = [AllowAny]  # customer-facing search
 
     @extend_schema(request=VinLookupSerializer, responses=VehicleSerializer)
     def post(self, request):
@@ -92,6 +101,8 @@ class VehiclePrewarmView(APIView):
     already cached, processing if enqueued, or a decode error).
     """
 
+    permission_classes = [IsAdminUser]  # bulk/ops endpoint
+
     @extend_schema(request=VinBatchSerializer, responses=None)
     def post(self, request):
         payload = VinBatchSerializer(data=request.data)
@@ -119,6 +130,9 @@ class ModelLookupView(APIView):
     - Otherwise -> enqueue the scraping and respond 202 "processing"; the worker
       notifies via webhook when done.
     """
+
+    authentication_classes = []  # public: no session → no CSRF gate for customers
+    permission_classes = [AllowAny]  # customer-facing search
 
     @extend_schema(request=ModelLookupSerializer, responses=VehicleModelSerializer)
     def post(self, request):
@@ -152,6 +166,7 @@ class VehicleStatusView(APIView):
     job for it (useful for the frontend while it waits for the webhook).
     """
 
+    permission_classes = [AllowAny]  # frontend polls this while waiting
     throttle_classes = []
 
     @extend_schema(responses=OpenApiTypes.OBJECT)
@@ -159,6 +174,15 @@ class VehicleStatusView(APIView):
         vin = vin.strip().upper()
         vehicle = Vehicle.objects.filter(vin=vin).first()
         job = ScrapeJob.objects.filter(vin=vin).order_by("-created_at").first()
+        if job is None:
+            # Deduped requests share ONE job; a second requester's VIN lives only in
+            # ScrapeSubscriber, so fall back to it to still report the job status
+            # (keeps the frontend's fast-fail if the shared job fails).
+            sub = (
+                ScrapeSubscriber.objects.filter(vin=vin)
+                .select_related("job").order_by("-created_at").first()
+            )
+            job = sub.job if sub else None
         return Response({
             "vin": vin,
             "vehicle": VehicleSerializer(vehicle).data if vehicle else None,
@@ -173,6 +197,7 @@ class JobStatusView(APIView):
     (so it shows the freshly scraped result instead of the previously cached one).
     """
 
+    permission_classes = [AllowAny]  # frontend polls this while waiting
     throttle_classes = []
 
     @extend_schema(responses=ScrapeJobSerializer)
@@ -186,6 +211,7 @@ class JobStatusView(APIView):
 class VehicleListView(ListAPIView):
     """List resolved vehicles, most-recent first. GET /api/vehicles/?page_size=10"""
 
+    permission_classes = [IsAdminUser]  # enumerates all VINs/prices — ops only
     throttle_classes = []
     queryset = Vehicle.objects.order_by("-updated_at")
     serializer_class = VehicleSerializer
@@ -195,6 +221,7 @@ class VehicleListView(ListAPIView):
 class VehicleDetailView(RetrieveAPIView):
     """Vehicle detail by VIN. GET /api/vehicles/<vin>/"""
 
+    permission_classes = [IsAdminUser]  # exposes raw_data — ops only
     queryset = Vehicle.objects.all()
     serializer_class = VehicleSerializer
     lookup_field = "vin"
@@ -207,6 +234,7 @@ class VehicleDetailView(RetrieveAPIView):
 class SourceListView(ListAPIView):
     """List configured scraper sources. GET /api/sources/"""
 
+    permission_classes = [IsAdminUser]  # exposes selectors/config — ops only
     queryset = ScraperSource.objects.all()
     serializer_class = ScraperSourceSerializer
 
@@ -222,6 +250,7 @@ class WorkerControlView(APIView):
     endpoints let you stop and start it again at runtime.
     """
 
+    permission_classes = [IsAdminUser]  # control plane — ops only
     throttle_classes = []
 
     @extend_schema(responses=OpenApiTypes.OBJECT)
@@ -234,7 +263,7 @@ class WorkerControlView(APIView):
         from .worker import controller
 
         if action == "start":
-            started = controller.start()
+            started = controller.start(log=logger.info)
             detail = "Worker started." if started else "The worker was already running."
             return Response({"ok": True, "detail": detail, **controller.status()})
 
@@ -264,6 +293,7 @@ class CrawlerControlView(APIView):
     POST /api/crawler/stop/    -> stop it
     """
 
+    permission_classes = [IsAdminUser]  # control plane — ops only
     throttle_classes = []
 
     @extend_schema(responses=OpenApiTypes.OBJECT)

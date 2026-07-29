@@ -1,0 +1,29 @@
+# Control de versiones / IDE
+.git
+.gitignore
+.github
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Entornos Python
+.venv
+venv
+__pycache__
+*.py[cod]
+
+# Datos y artefactos locales (no van a la imagen)
+db.sqlite3
+db.sqlite3-*
+*.log
+staticfiles/
+
+# Perfiles de Chrome del scraper (cookies/estado)
+.chrome_profile_scraper/
+.chrome_profile_cargurus
+
+# Secretos: nunca hornear los .env reales en la imagen (solo la plantilla)
+.env
+.env.*
+!.env.example

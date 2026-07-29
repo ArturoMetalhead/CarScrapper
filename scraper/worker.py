@@ -20,6 +20,7 @@ from datetime import timedelta
 from typing import Callable
 
 from django.conf import settings
+from django.db import close_old_connections, transaction
 from django.utils import timezone
 
 from . import webhooks
@@ -30,6 +31,7 @@ from .services import (
     PRIORITY_ONDEMAND,
     AllSourcesFailed,
     apply_model_to_vehicles,
+    mark_model_failure,
     scrape_model_data,
 )
 
@@ -62,31 +64,39 @@ def reclaim_running() -> int:
 
 
 def _has_pending_ondemand() -> bool:
-    """True if a user (on-demand) search is waiting — it must not be delayed."""
-    return ScrapeJob.objects.filter(
-        status=ScrapeJob.Status.PENDING, priority__lte=PRIORITY_ONDEMAND
-    ).exists()
+    """True if a user (on-demand) search is waiting — it must not be delayed.
+
+    Defensive: a transient DB error here must not kill the worker loop; treat it
+    as "none pending" and let the loop continue.
+    """
+    try:
+        return ScrapeJob.objects.filter(
+            status=ScrapeJob.Status.PENDING, priority__lte=PRIORITY_ONDEMAND
+        ).exists()
+    except Exception:  # noqa: BLE001 — transient DB issue
+        return False
 
 
 def claim_next_job() -> ScrapeJob | None:
     """Take the next pending job and mark it 'running' atomically.
 
-    The update conditioned on status=PENDING prevents two runners from taking the
-    same job.
+    Uses SELECT ... FOR UPDATE SKIP LOCKED so several CONCURRENT workers each grab
+    a DIFFERENT pending job without racing (needed once this runs on a hosted
+    server with multiple workers). On SQLite (dev) row-locking is a no-op, which is
+    fine with the single dev worker.
     """
-    job = (
-        ScrapeJob.objects.filter(status=ScrapeJob.Status.PENDING)
-        .order_by("priority", "created_at")
-        .first()
-    )
-    if job is None:
-        return None
-    taken = ScrapeJob.objects.filter(
-        pk=job.pk, status=ScrapeJob.Status.PENDING
-    ).update(status=ScrapeJob.Status.RUNNING, started_at=timezone.now())
-    if not taken:
-        return None
-    job.refresh_from_db()
+    with transaction.atomic():
+        job = (
+            ScrapeJob.objects.select_for_update(skip_locked=True)
+            .filter(status=ScrapeJob.Status.PENDING)
+            .order_by("priority", "created_at")
+            .first()
+        )
+        if job is None:
+            return None
+        job.status = ScrapeJob.Status.RUNNING
+        job.started_at = timezone.now()
+        job.save(update_fields=["status", "started_at"])
     return job
 
 
@@ -111,10 +121,24 @@ def process_job(job: ScrapeJob, log: LogFn = _noop) -> None:
             log("   BLOCKED (403) — on-demand failed fast.")
             webhooks.notify(job, error=True)
         else:
-            job.status = ScrapeJob.Status.PENDING
-            job.started_at = None
-            job.save(update_fields=["status", "started_at"])
-            log("   BLOCKED (403) — requeued; backing off.")
+            # Background job: count the block so a persistently-blocked phantom
+            # model doesn't bounce forever, re-hitting (and re-flagging) the source
+            # after every cooldown. Respect max_attempts (crawl=1) like the
+            # AllSourcesFailed path does.
+            job.attempts += 1
+            if job.attempts >= max_attempts:
+                job.status = ScrapeJob.Status.FAILED
+                job.last_error = "Blocked (403) — giving up after repeated blocks."
+                job.finished_at = timezone.now()
+                job.save(update_fields=["status", "attempts", "last_error", "finished_at"])
+                mark_model_failure(job.make, job.model, job.year, job.trim)
+                log(f"   BLOCKED (403) x{job.attempts}/{max_attempts} — giving up.")
+                webhooks.notify(job, error=True)
+            else:
+                job.status = ScrapeJob.Status.PENDING
+                job.started_at = None
+                job.save(update_fields=["status", "attempts", "started_at"])
+                log(f"   BLOCKED (403) — requeued ({job.attempts}/{max_attempts}); backing off.")
         raise
     except AllSourcesFailed as exc:
         job.attempts += 1
@@ -123,6 +147,7 @@ def process_job(job: ScrapeJob, log: LogFn = _noop) -> None:
             job.status = ScrapeJob.Status.FAILED
             job.finished_at = timezone.now()
             job.save(update_fields=["status", "attempts", "last_error", "finished_at"])
+            mark_model_failure(job.make, job.model, job.year, job.trim)
             log(f"   FAILED after {job.attempts} attempts: {exc}")
             webhooks.notify(job, error=True)
         else:
@@ -137,6 +162,7 @@ def process_job(job: ScrapeJob, log: LogFn = _noop) -> None:
         job.last_error = f"Unexpected error: {exc}"
         job.finished_at = timezone.now()
         job.save(update_fields=["status", "attempts", "last_error", "finished_at"])
+        mark_model_failure(job.make, job.model, job.year, job.trim)
         logger.exception("Unexpected error processing job %s", job.pk)
         log(f"   Unexpected ERROR: {exc}")
         webhooks.notify(job, error=True)
@@ -177,6 +203,10 @@ def run_loop(
         log(f"Reclaimed {reclaimed} orphan job(s) stuck in 'running'.")
     while not stop_event.is_set():
         WORKER_STATE["activity"] = None  # cleared between jobs; set while scraping
+        # Drop DB connections the server may have closed while the worker was idle
+        # or scraping, so the next query reconnects instead of raising (this loop
+        # lives outside the request cycle, so Django never refreshes them for us).
+        close_old_connections()
         try:
             job = claim_next_job()
         except Exception:  # noqa: BLE001 — transient DB issues must not kill the loop
@@ -223,6 +253,10 @@ def run_loop(
                 remaining -= step
             WORKER_STATE["cooling_until"] = None
             continue
+        except Exception:  # noqa: BLE001 — an unexpected failure must not kill the worker
+            logger.exception("Unexpected error processing job %s", getattr(job, "pk", "?"))
+            stop_event.wait(min(poll, 5))
+            continue
 
         # A scrape that didn't block (success or plain not-found) means access
         # works again; clear the block state.
@@ -231,13 +265,21 @@ def run_loop(
         WORKER_STATE["consecutive_blocks"] = 0
         WORKER_STATE["block_phase"] = None
 
-        # Throttle only for background politeness — NEVER delay a user search:
-        # skip the wait if this job was on-demand or another one is waiting.
+        # Throttle only for background politeness — NEVER delay a user search.
+        # INTERRUPTIBLE: if a user (on-demand) search arrives during the wait,
+        # break out at once so it isn't stuck behind the (long) background throttle
+        # — otherwise it can exceed the dashboard's poll timeout and look "stuck".
         if not is_ondemand and not _has_pending_ondemand():
             delay = getattr(settings, "SCRAPER_WORKER_DELAY", 0)
-            if delay and not stop_event.is_set():
+            if delay:
                 jitter = delay * 0.3
-                stop_event.wait(max(1.0, delay + random.uniform(-jitter, jitter)))
+                remaining = max(1.0, delay + random.uniform(-jitter, jitter))
+                while remaining > 0 and not stop_event.is_set():
+                    if _has_pending_ondemand():
+                        break
+                    step = min(3, remaining)
+                    stop_event.wait(step)
+                    remaining -= step
 
 
 class WorkerController:
@@ -253,6 +295,12 @@ class WorkerController:
         """Start the worker thread. Returns True if started, False if already running."""
         with self._lock:
             if self._thread and self._thread.is_alive():
+                if self._stop.is_set():
+                    # A stop was requested but the thread is still finishing its
+                    # in-flight job. Cancel the pending stop so the worker keeps
+                    # running instead of dying right after we report it as running.
+                    self._stop.clear()
+                    return True
                 return False
             self._stop.clear()
             self._thread = threading.Thread(

@@ -51,6 +51,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         for data in SOURCES:
+            data = dict(data)  # copy: don't mutate module-level SOURCES (idempotent re-runs)
             slug = data.pop("slug")
             source, created = ScraperSource.objects.update_or_create(
                 slug=slug, defaults=data

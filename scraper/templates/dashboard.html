@@ -127,6 +127,10 @@
 const CSRF="{{ csrf_token }}";
 const money = n => (n==null||n==="") ? "—" : "$"+Math.round(Number(n)).toLocaleString("en-US");
 const out = document.getElementById("out");
+// XSS guards: escape scraped/user text before innerHTML, and only allow http(s)
+// in href (blocks javascript:/data:).
+const esc = s => String(s==null?"":s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const safeUrl = u => /^https?:\/\//i.test(String(u||"")) ? u : "#";
 
 async function api(path, method="GET", body=null){
   const opt={method, headers:{}};
@@ -173,7 +177,7 @@ function rangeBar(low, high, est){
     </div>`;
 }
 
-function specRow(k,v){ return v ? `<div class="spec"><div class="k">${k}</div><div class="v">${v}</div></div>` : ""; }
+function specRow(k,v){ return v ? `<div class="spec"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>` : ""; }
 
 // Technical specs decoded from the VIN via NHTSA (present only for VIN lookups).
 function nhtsaSpecs(v){
@@ -209,7 +213,7 @@ function render(v){
   out.innerHTML=`<div class="vcard fade">
     <div class="vhead">
       <div>
-        <div class="name">${[v.year,v.make,v.model].filter(Boolean).join(" ")}</div>
+        <div class="name">${esc([v.year,v.make,v.model].filter(Boolean).join(" "))}</div>
         <div class="sub">Valoración de mercado</div>
       </div>
     </div>
@@ -217,7 +221,7 @@ function render(v){
       ${priceBlocks(v)}
       ${rangeBar(v.price_low, v.price_high, v.estimated_price)}
       ${specs}
-      <div class="vfoot">Datos de mercado de <a href="${v.source_url||'#'}" target="_blank">${v.source_name || 'la fuente'}</a> · decodificación NHTSA</div>
+      <div class="vfoot">Datos de mercado de <a href="${safeUrl(v.source_url)}" target="_blank">${esc(v.source_name || 'la fuente')}</a> · decodificación NHTSA</div>
     </div>
   </div>`;
 }
@@ -239,7 +243,7 @@ async function lookupVin(){
     const s=await api(`/vehicles/${vin}/status/`);
     const v=s.data.vehicle, job=s.data.job;
     if(v && v.estimated_price!=null){ clearInterval(poll); render(v); return; }
-    if((job && job.status==="failed") || tries>40){
+    if((job && job.status==="failed") || tries>60){
       clearInterval(poll);
       error("No hemos podido obtener el precio de este vehículo. Puede que su modelo no esté disponible en nuestra fuente.");
     }
@@ -269,7 +273,7 @@ async function lookupModel(){
       const {data:d}=await api("/models/lookup/","POST",{make,model,year});
       render(d.model_data); return;
     }
-    if(st==="failed" || tries>40){
+    if(st==="failed" || tries>60){
       clearInterval(poll);
       error("No hemos podido obtener el precio de este modelo. Puede que no esté disponible en nuestra fuente.");
     }

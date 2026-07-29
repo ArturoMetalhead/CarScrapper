@@ -123,9 +123,13 @@ def seed_crawl(frontier: list[tuple[str, str, int]], limit: int) -> int:
 def refresh_stale(limit: int) -> int:
     """Re-enqueue VehicleModels past the cache TTL as refresh jobs."""
     ttl_hours = getattr(settings, "SCRAPER_CACHE_TTL_HOURS", 24)
+    max_fail = getattr(settings, "SCRAPER_MODEL_MAX_FAILURES", 5)
     cutoff = timezone.now() - timedelta(hours=ttl_hours)
     stale = (
         VehicleModel.objects.filter(updated_at__lt=cutoff)
+        # Dead-letter: stop auto-refreshing models that keep failing (e.g. retired
+        # from the source), so they don't burn IP quota every cycle forever.
+        .exclude(scrape_failures__gte=max_fail)
         .order_by("updated_at")[:limit]
     )
     refreshed = 0

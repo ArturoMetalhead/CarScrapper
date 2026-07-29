@@ -1,0 +1,17 @@
+# Override SOLO para probar el stack en local (NO usar en producción).
+# Ajusta lo que en prod real resuelve el dominio + nginx (hosts y HTTPS), sin tocar
+# .env.production. DEBUG sigue False: se prueba exactamente como producción.
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml up -d --build
+services:
+  web:
+    environment:
+      ALLOWED_HOSTS: "*"
+      SECRET_KEY: "test-only-secret-not-for-prod"
+      SECURE_SSL_REDIRECT: "False"
+      SESSION_COOKIE_SECURE: "False"
+      CSRF_COOKIE_SECURE: "False"
+  worker:
+    # El worker también carga settings (fail-hard de SECRET_KEY); dale una clave de
+    # prueba (no placeholder) para que no aborte en local.
+    environment:
+      SECRET_KEY: "test-only-secret-not-for-prod"

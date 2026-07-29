@@ -49,20 +49,6 @@ class ScrapedVehicle:
     source_url: str = ""
     raw_data: dict[str, Any] = field(default_factory=dict)
 
-    def as_model_kwargs(self) -> dict[str, Any]:
-        """Turn the dataclass into kwargs to create/update the model."""
-        return {
-            "make": self.make,
-            "model": self.model,
-            "year": self.year,
-            "trim": self.trim,
-            "mileage": self.mileage,
-            "estimated_price": self.estimated_price,
-            "currency": self.currency,
-            "source_url": self.source_url,
-            "raw_data": self.raw_data,
-        }
-
 
 def parse_price(text: str) -> Decimal | None:
     """Extract a decimal value from text like '$18,500' or '18.500,00'."""
@@ -134,7 +120,13 @@ class BaseProvider:
     def parse_model(
         self, response, make: str, model: str, year: int | None = None, trim: str = ""
     ) -> ScrapedVehicle:
-        raise NotImplementedError
+        # Model scraping needs a DEDICATED provider (edmunds/cargurus); the
+        # 'generic' provider only supports VIN scraping. Raise a source error (not
+        # NotImplementedError) so the service treats it as a clean source failure
+        # and moves on to the next source instead of logging an "unexpected error".
+        raise ScraperError(
+            f"Provider '{self.source.provider_key}' does not support model scraping."
+        )
 
     def build_session(self) -> requests.Session:
         session = requests.Session()

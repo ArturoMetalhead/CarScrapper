@@ -29,7 +29,8 @@ logger = logging.getLogger(__name__)
 # Plausible car price range (USD) to filter out noise when aggregating.
 # Configurable so luxury/exotics (>$200k) aren't silently dropped.
 _PRICE_MIN = getattr(settings, "SCRAPER_PRICE_MIN", 1000)
-_PRICE_MAX = getattr(settings, "SCRAPER_PRICE_MAX", 500000)
+# High safety ceiling, not a real price cap: exotics/collectors must show through.
+_PRICE_MAX = getattr(settings, "SCRAPER_PRICE_MAX", 10_000_000)
 _PRICE_RE = re.compile(r"\$\s?(\d{1,3}(?:,\d{3})+)")
 # Edmunds' own labeled values: "Edmunds suggests you pay $X" and a "$X - $Y" range.
 _SUGGEST_RE = re.compile(r"suggests?\s+you\s+pay[^$]{0,25}\$([\d,]{4,})", re.I)
@@ -90,8 +91,11 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
         """
         candidates = self._model_candidates(make, model, series)
         for candidate in candidates:
-            response = self.fetch_model(make, candidate, year, trim)
-            result = self.parse_model(response, make, model, year, trim)
+            try:
+                response = self.fetch_model(make, candidate, year, trim)
+                result = self.parse_model(response, make, model, year, trim)
+            except VehicleNotFound:
+                continue  # this slug 404'd — try the next candidate, don't abort
             if result.estimated_price is not None:
                 if not result.source_url:
                     result.source_url = self.source.build_model_url(make, candidate, year, trim)
@@ -425,17 +429,18 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
 
     @staticmethod
     def _robust_listing_stats(prices: list[Decimal]) -> tuple[Decimal, Decimal, Decimal]:
-        """Return (median, low, high) trimming outliers from the listing prices.
+        """Return (median, low, high) from the listing prices.
 
-        A model-year page also shows cross-sell / other-year listings whose
-        prices pollute the raw min/max (e.g. a $53k newer BMW on a 2013 3-Series
-        page). We keep only prices within a band around the median before taking
-        the spread, so the range reflects the actual model/year.
+        The MEDIAN and LOW come from a tight band around the median, so a stray
+        cheap cross-sell doesn't drag them down. The HIGH, however, is the real top
+        of the accepted prices: an exotic/collector (e.g. a $1.4M Porsche) must show
+        its true maximum, not a band-trimmed one. Garbage is already filtered out by
+        _PRICE_MIN/_PRICE_MAX before this point.
         """
         med = median(prices)
         low_b, high_b = med * Decimal("0.35"), med * Decimal("2.5")
         band = [p for p in prices if low_b <= p <= high_b] or list(prices)
-        return Decimal(round(median(band))), min(band), max(band)
+        return Decimal(round(median(band))), min(band), max(prices)
 
     @staticmethod
     def _num(raw: str) -> Decimal | None:

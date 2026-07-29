@@ -1,7 +1,10 @@
+import logging
 import os
 import sys
 
 from django.apps import AppConfig
+
+logger = logging.getLogger("scraper.worker")
 
 
 class ScraperConfig(AppConfig):
@@ -24,7 +27,7 @@ class ScraperConfig(AppConfig):
         if getattr(settings, "SCRAPER_WORKER_AUTOSTART", True):
             from .worker import controller
 
-            controller.start()
+            controller.start(log=logger.info)
 
         if getattr(settings, "SCRAPER_CRAWL_ENABLED", True):
             from .crawler import planner

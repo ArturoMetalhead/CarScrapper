@@ -1,0 +1,8 @@
+# Dependencias de PRODUCCIÓN (además de las base). Úsalo en el servidor/Docker:
+#   pip install -r requirements-prod.txt
+-r requirements.txt
+
+# Servidor WSGI.
+gunicorn==23.0.0
+# Driver de PostgreSQL (binario, no necesita compilar).
+psycopg[binary]==3.2.3

@@ -4,6 +4,7 @@ Django settings for the CarScrapper project.
 Based on Django 6.0. Sensitive values are read from a .env file (see
 .env.example) using django-environ.
 """
+import os
 from pathlib import Path
 
 import environ
@@ -15,13 +16,35 @@ env = environ.Env(
     ALLOWED_HOSTS=(list, ["127.0.0.1", "localhost"]),
     CORS_ALLOWED_ORIGINS=(list, []),
 )
-# Read the .env file if present (development). In production, use real system
-# environment variables.
-environ.Env.read_env(BASE_DIR / ".env")
+# Load the env file for the selected environment. DJANGO_ENV=production loads
+# .env.production; anything else (the default) loads .env.development. Both are
+# private (gitignored); .env.example is the committed reference. Falls back to a
+# plain .env, and finally to the real OS environment variables.
+DJANGO_ENV = os.environ.get("DJANGO_ENV", "development")
+for _env_file in (BASE_DIR / f".env.{DJANGO_ENV}", BASE_DIR / ".env"):
+    if _env_file.exists():
+        environ.Env.read_env(_env_file)
+        break
 
 SECRET_KEY = env("SECRET_KEY", default="dev-insecure-change-me")
 DEBUG = env("DEBUG")
 ALLOWED_HOSTS = env("ALLOWED_HOSTS")
+
+# Fail hard in PRODUCTION if SECRET_KEY was left at an insecure placeholder — a
+# known key lets anyone forge sessions / signed cookies / password-reset tokens.
+# Gated on DJANGO_ENV (not DEBUG), because local dev runs with DEBUG=False too.
+if DJANGO_ENV == "production" and SECRET_KEY in (
+    "dev-insecure-change-me",
+    "dev-insecure-local-key-change-me",
+    "CAMBIA-ESTO-por-una-clave-larga-unica-y-secreta",
+    "change-this-to-a-secret-key",
+    "",
+):
+    from django.core.exceptions import ImproperlyConfigured
+
+    raise ImproperlyConfigured(
+        "SECRET_KEY must be set to a strong, unique value in production (DEBUG=False)."
+    )
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -41,6 +64,9 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    # Serves static files from the app itself (so DEBUG=False still serves the
+    # admin CSS). Must go right after SecurityMiddleware.
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -103,8 +129,31 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+# WhiteNoise serves the collected static files from the app, so DEBUG=False
+# still serves the admin CSS (no dev static handler needed). Run `collectstatic`.
+# The compressed-manifest backend fingerprints files for far-future caching.
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
+}
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# --- Production hardening (only applied when DEBUG is False) -------------------
+# Extra origins allowed to POST (admin/login over HTTPS behind a domain).
+CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=[])
+if not DEBUG:
+    # App runs behind a TLS-terminating proxy (nginx / load balancer).
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    # These need real HTTPS; default OFF so a local DEBUG=False run over http
+    # still works. Turn them ON in the server env (.env.production).
+    SECURE_SSL_REDIRECT = env.bool("SECURE_SSL_REDIRECT", default=False)
+    SESSION_COOKIE_SECURE = env.bool("SESSION_COOKIE_SECURE", default=False)
+    CSRF_COOKIE_SECURE = env.bool("CSRF_COOKIE_SECURE", default=False)
+    SECURE_HSTS_SECONDS = env.int("SECURE_HSTS_SECONDS", default=0)
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = env.bool("SECURE_HSTS_INCLUDE_SUBDOMAINS", default=True)
+    SECURE_HSTS_PRELOAD = env.bool("SECURE_HSTS_PRELOAD", default=True)
 
 REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": [
@@ -113,6 +162,11 @@ REST_FRAMEWORK = {
     ],
     "DEFAULT_PARSER_CLASSES": [
         "rest_framework.parsers.JSONParser",
+    ],
+    # Cierre por defecto: todo endpoint exige autenticación salvo que declare
+    # AllowAny explícito (los del flujo del cliente: health + lookups + status).
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
     ],
     "DEFAULT_THROTTLE_CLASSES": [
         "rest_framework.throttling.AnonRateThrottle",
@@ -170,6 +224,13 @@ SCRAPER_NODRIVER_HIDE_WINDOW = env.bool("SCRAPER_NODRIVER_HIDE_WINDOW", default=
 SCRAPER_NODRIVER_RETRIES = env.int("SCRAPER_NODRIVER_RETRIES", default=3)
 # Seconds to wait after navigating, so the JS challenge settles.
 SCRAPER_NODRIVER_SETTLE = env.int("SCRAPER_NODRIVER_SETTLE", default=6)
+# Container-only: Chrome needs --no-sandbox/--disable-dev-shm-usage to launch
+# inside Docker, and an explicit binary path. Set in the worker image, not locally.
+SCRAPER_NODRIVER_NO_SANDBOX = env.bool("SCRAPER_NODRIVER_NO_SANDBOX", default=False)
+SCRAPER_NODRIVER_BINARY = env("SCRAPER_NODRIVER_BINARY", default="")
+# Absolute cap (s) for a single nodriver render. Prevents a hung Chrome from
+# freezing the (single) worker thread forever.
+SCRAPER_NODRIVER_HARD_TIMEOUT = env.int("SCRAPER_NODRIVER_HARD_TIMEOUT", default=120)
 
 # Edmunds: overlay REAL market data from the /for-sale/ inventory page (min from
 # actual listings + "Average price"). Adds a 2nd page fetch per model; set False
@@ -180,16 +241,20 @@ SCRAPER_EDMUNDS_MIN_LISTINGS = env.int("SCRAPER_EDMUNDS_MIN_LISTINGS", default=5
 # True = 2 inventory requests (real min AND max); False = 1 (ascending only,
 # uses the MSRP top for the maximum). More requests = higher block risk.
 SCRAPER_EDMUNDS_INVENTORY_BOTH_ENDS = env.bool("SCRAPER_EDMUNDS_INVENTORY_BOTH_ENDS", default=True)
-# Plausible car-price band (USD) used to filter noise when aggregating listings.
-# Default max is 500k to cover luxury/exotics; raise it further if needed.
+# Plausible car-price band (USD) used only to drop garbage/mis-parsed numbers when
+# aggregating listings. The max is a high safety ceiling (10M) — NOT a real price
+# cap — so exotics/collectors (e.g. a $1.4M Porsche) show their true top price.
 SCRAPER_PRICE_MIN = env.int("SCRAPER_PRICE_MIN", default=1000)
-SCRAPER_PRICE_MAX = env.int("SCRAPER_PRICE_MAX", default=500000)
+SCRAPER_PRICE_MAX = env.int("SCRAPER_PRICE_MAX", default=10_000_000)
 
 # Timeout for NHTSA VIN decoding.
 SCRAPER_VIN_DECODE_TIMEOUT = env.int("SCRAPER_VIN_DECODE_TIMEOUT", default=15)
 # Hours a market data row (VehicleModel) is considered fresh before requeueing
 # its re-scraping.
 SCRAPER_CACHE_TTL_HOURS = env.int("SCRAPER_CACHE_TTL_HOURS", default=24)
+# Dead-letter: after this many consecutive scrape failures a VehicleModel stops
+# being auto-refreshed (a retired model would otherwise burn IP quota forever).
+SCRAPER_MODEL_MAX_FAILURES = env.int("SCRAPER_MODEL_MAX_FAILURES", default=5)
 # Worker: starts alongside the API (background thread). Set to False to run it
 # separately with `manage.py run_scrape_worker`.
 SCRAPER_WORKER_AUTOSTART = env.bool("SCRAPER_WORKER_AUTOSTART", default=True)

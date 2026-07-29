@@ -15,6 +15,7 @@ Los `verbose_name` visibles están en español (el proyecto usa LANGUAGE_CODE=es
 los valores internos (choices, keys) se mantienen en inglés a propósito.
 """
 from django.db import models
+from django.db.models.functions import Coalesce, Lower
 
 
 class ScraperSource(models.Model):
@@ -41,7 +42,9 @@ class ScraperSource(models.Model):
         default="",
         help_text=(
             "Path to query by MODEL (used by the background scraping). "
-            "Placeholders: {make} {model} {year} {trim}. e.g. /{make}/{model}/{year}/"
+            "Placeholders: {make} {model} {year} {trim}. e.g. /{make}/{model}/{year}/. "
+            "NOTE: model scraping requires a DEDICATED provider (edmunds/cargurus); "
+            "the 'generic' provider only supports VIN scraping."
         ),
     )
 
@@ -159,6 +162,9 @@ class VehicleModel(models.Model):
     )
     source_url = models.URLField("URL de la fuente", max_length=500, blank=True)
     raw_data = models.JSONField("Datos crudos", default=dict, blank=True)
+    # Consecutive scrape failures; the crawler dead-letters a model past the
+    # configured threshold (SCRAPER_MODEL_MAX_FAILURES). A success resets it to 0.
+    scrape_failures = models.PositiveIntegerField("Fallos de scraping", default=0)
 
     created_at = models.DateTimeField("Creado", auto_now_add=True)
     updated_at = models.DateTimeField("Actualizado", auto_now=True)
@@ -168,9 +174,18 @@ class VehicleModel(models.Model):
         verbose_name_plural = "Datos de modelos"
         ordering = ["make", "model", "year", "trim"]
         constraints = [
+            # Unicidad case-INSENSITIVE y con year NULL tratado como 0: dos filas
+            # del mismo make/model/trim (sin importar mayúsculas) y mismo año — o
+            # ambas sin año — se consideran la MISMA. Coincide con el upsert de
+            # services.py (__iexact) y Coalesce(year,0) cierra el hueco NULL!=NULL
+            # de SQL. Nota: al ser un constraint por EXPRESIÓN, no lo valida
+            # validate_unique() clásico; el upsert captura IntegrityError igualmente.
             models.UniqueConstraint(
-                fields=["make", "model", "year", "trim"],
-                name="uniq_vehiclemodel_make_model_year_trim",
+                Lower("make"),
+                Lower("model"),
+                Lower("trim"),
+                Coalesce("year", 0),
+                name="uniq_vehiclemodel_ci",
             )
         ]
 

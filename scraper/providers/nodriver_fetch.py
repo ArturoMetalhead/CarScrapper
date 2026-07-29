@@ -69,10 +69,14 @@ def reset_profile() -> bool:
     import shutil
 
     path = profile_dir()
+    clear_singleton_lock(path)  # drop the lock handle first so Windows can delete it
     try:
         shutil.rmtree(path, ignore_errors=True)
         os.makedirs(path, exist_ok=True)
-        return True
+        # Report success only if the profile is REALLY empty. On Windows a Chrome
+        # file lock can leave files behind (rmtree ignore_errors swallows it); an
+        # unconditional True would lie ("Fresh profile") and reuse a banned cookie.
+        return not any(os.scandir(path))
     except Exception:  # noqa: BLE001 — best-effort
         return False
 

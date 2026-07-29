@@ -30,6 +30,22 @@ SECRET_KEY = env("SECRET_KEY", default="dev-insecure-change-me")
 DEBUG = env("DEBUG")
 ALLOWED_HOSTS = env("ALLOWED_HOSTS")
 
+# Fail hard in PRODUCTION if SECRET_KEY was left at an insecure placeholder — a
+# known key lets anyone forge sessions / signed cookies / password-reset tokens.
+# Gated on DJANGO_ENV (not DEBUG), because local dev runs with DEBUG=False too.
+if DJANGO_ENV == "production" and SECRET_KEY in (
+    "dev-insecure-change-me",
+    "dev-insecure-local-key-change-me",
+    "CAMBIA-ESTO-por-una-clave-larga-unica-y-secreta",
+    "change-this-to-a-secret-key",
+    "",
+):
+    from django.core.exceptions import ImproperlyConfigured
+
+    raise ImproperlyConfigured(
+        "SECRET_KEY must be set to a strong, unique value in production (DEBUG=False)."
+    )
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",

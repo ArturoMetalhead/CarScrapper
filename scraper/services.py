@@ -342,14 +342,31 @@ def scrape_model_data(
             .order_by("id")
             .first()
         )
+        if vm is None:
+            try:
+                vm = VehicleModel.objects.create(
+                    make=make, model=model, year=year, trim=trim, **defaults
+                )
+                logger.info(
+                    "Model %s %s %s resolved by '%s'.", year, make, model, source.name
+                )
+                return vm
+            except IntegrityError:
+                # Otra petición concurrente insertó esta fila primero (posiblemente
+                # con otra capitalización) y el índice único case-insensitive la
+                # rechazó. Reutiliza la existente en vez de propagar el error como
+                # un job FAILED espurio. Relevante bajo multi-worker.
+                vm = (
+                    VehicleModel.objects.filter(
+                        make__iexact=make, model__iexact=model, year=year, trim__iexact=trim
+                    )
+                    .order_by("id")
+                    .first()
+                )
         if vm is not None:
             for field, value in defaults.items():
                 setattr(vm, field, value)
             vm.save()
-        else:
-            vm = VehicleModel.objects.create(
-                make=make, model=model, year=year, trim=trim, **defaults
-            )
         logger.info("Model %s %s %s resolved by '%s'.", year, make, model, source.name)
         return vm
 

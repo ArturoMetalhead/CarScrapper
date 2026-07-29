@@ -12,5 +12,19 @@ sleep 1
 # el SingletonLock apuntando a otro host) — si no, Chrome no arranca.
 rm -f /app/.chrome_profile_scraper/Singleton* 2>/dev/null || true
 
-echo "[worker] Xvfb listo en :99. Arrancando: $*"
+# No arrancar contra una BD sin migrar (modos B/C, worker aparte): esperar a que
+# las migraciones estén aplicadas (las corre el contenedor web) en vez de
+# estrellarse contra tablas inexistentes a mitad del loop.
+n=0
+until python manage.py migrate --check >/dev/null 2>&1; do
+  n=$((n + 1))
+  if [ "$n" -ge 60 ]; then
+    echo "[worker] La BD no está migrada/accesible tras 60 intentos. Abortando." >&2
+    exit 1
+  fi
+  echo "[worker] Esperando a que la BD esté migrada..."
+  sleep 2
+done
+
+echo "[worker] Xvfb listo en :99 y BD migrada. Arrancando: $*"
 exec "$@"

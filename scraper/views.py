@@ -1,4 +1,6 @@
 """Scraper API views."""
+import logging
+
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
@@ -16,7 +18,7 @@ class RecentPagination(PageNumberPagination):
     page_size_query_param = "page_size"
     max_page_size = 100
 
-from .models import ScrapeJob, ScraperSource, Vehicle
+from .models import ScrapeJob, ScrapeSubscriber, ScraperSource, Vehicle
 from .serializers import (
     ModelLookupSerializer,
     ScraperSourceSerializer,
@@ -27,6 +29,8 @@ from .serializers import (
     VinLookupSerializer,
 )
 from .services import STATUS_READY, VinDecodeError, resolve_model, resolve_vin
+
+logger = logging.getLogger("scraper.worker")
 
 
 class HealthView(APIView):
@@ -170,6 +174,15 @@ class VehicleStatusView(APIView):
         vin = vin.strip().upper()
         vehicle = Vehicle.objects.filter(vin=vin).first()
         job = ScrapeJob.objects.filter(vin=vin).order_by("-created_at").first()
+        if job is None:
+            # Deduped requests share ONE job; a second requester's VIN lives only in
+            # ScrapeSubscriber, so fall back to it to still report the job status
+            # (keeps the frontend's fast-fail if the shared job fails).
+            sub = (
+                ScrapeSubscriber.objects.filter(vin=vin)
+                .select_related("job").order_by("-created_at").first()
+            )
+            job = sub.job if sub else None
         return Response({
             "vin": vin,
             "vehicle": VehicleSerializer(vehicle).data if vehicle else None,
@@ -250,7 +263,7 @@ class WorkerControlView(APIView):
         from .worker import controller
 
         if action == "start":
-            started = controller.start()
+            started = controller.start(log=logger.info)
             detail = "Worker started." if started else "The worker was already running."
             return Response({"ok": True, "detail": detail, **controller.status()})
 

@@ -15,6 +15,7 @@ Los `verbose_name` visibles están en español (el proyecto usa LANGUAGE_CODE=es
 los valores internos (choices, keys) se mantienen en inglés a propósito.
 """
 from django.db import models
+from django.db.models.functions import Coalesce, Lower
 
 
 class ScraperSource(models.Model):
@@ -173,9 +174,18 @@ class VehicleModel(models.Model):
         verbose_name_plural = "Datos de modelos"
         ordering = ["make", "model", "year", "trim"]
         constraints = [
+            # Unicidad case-INSENSITIVE y con year NULL tratado como 0: dos filas
+            # del mismo make/model/trim (sin importar mayúsculas) y mismo año — o
+            # ambas sin año — se consideran la MISMA. Coincide con el upsert de
+            # services.py (__iexact) y Coalesce(year,0) cierra el hueco NULL!=NULL
+            # de SQL. Nota: al ser un constraint por EXPRESIÓN, no lo valida
+            # validate_unique() clásico; el upsert captura IntegrityError igualmente.
             models.UniqueConstraint(
-                fields=["make", "model", "year", "trim"],
-                name="uniq_vehiclemodel_make_model_year_trim",
+                Lower("make"),
+                Lower("model"),
+                Lower("trim"),
+                Coalesce("year", 0),
+                name="uniq_vehiclemodel_ci",
             )
         ]
 

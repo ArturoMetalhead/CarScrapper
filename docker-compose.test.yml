@@ -10,3 +10,8 @@ services:
       SECURE_SSL_REDIRECT: "False"
       SESSION_COOKIE_SECURE: "False"
       CSRF_COOKIE_SECURE: "False"
+  worker:
+    # El worker también carga settings (fail-hard de SECRET_KEY); dale una clave de
+    # prueba (no placeholder) para que no aborte en local.
+    environment:
+      SECRET_KEY: "test-only-secret-not-for-prod"

@@ -15,7 +15,7 @@
 #   WEB_PORT           Puerto del servidor donde se expone la web   (por defecto 8000)
 #   PORT               Puerto interno del contenedor                (por defecto 8000)
 #   WEB_CONCURRENCY    Nº de workers de gunicorn                    (por defecto 3)
-#   POSTGRES_PASSWORD  Clave de Postgres                            (por defecto 'carscrapper')
+#   POSTGRES_PASSWORD  Clave de Postgres  (OBLIGATORIA: en el .env local o export)
 services:
   db:
     image: postgres:16-alpine
@@ -23,7 +23,7 @@ services:
     environment:
       POSTGRES_DB: carscrapper
       POSTGRES_USER: carscrapper
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-carscrapper}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -42,7 +42,7 @@ services:
       DJANGO_ENV: production
       # Apunta al servicio 'db' con la misma clave (sobrescribe la DATABASE_URL
       # que hubiera en .env.production).
-      DATABASE_URL: postgres://carscrapper:${POSTGRES_PASSWORD:-carscrapper}@db:5432/carscrapper
+      DATABASE_URL: postgres://carscrapper:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/carscrapper
       # Ajustes de gunicorn (los lee gunicorn.conf.py).
       PORT: ${PORT:-8000}
       WEB_CONCURRENCY: ${WEB_CONCURRENCY:-3}
@@ -70,7 +70,7 @@ services:
     env_file: .env.production
     environment:
       DJANGO_ENV: production
-      DATABASE_URL: postgres://carscrapper:${POSTGRES_PASSWORD:-carscrapper}@db:5432/carscrapper
+      DATABASE_URL: postgres://carscrapper:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/carscrapper
       # Se lanza por comando (run_scrape_worker), no por el autostart del app-init.
       SCRAPER_WORKER_AUTOSTART: "False"
     depends_on:

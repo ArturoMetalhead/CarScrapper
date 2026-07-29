@@ -26,8 +26,12 @@ RUN pip install -r requirements-prod.txt
 
 COPY . .
 
-# Estáticos (WhiteNoise los sirve). No necesita BD ni secretos en el build.
-RUN python manage.py collectstatic --noinput \
+# Estáticos (WhiteNoise los sirve). No necesita BD ni secretos reales, pero como
+# DJANGO_ENV=production, settings.py exige un SECRET_KEY fuerte: le pasamos una
+# clave DESECHABLE solo para este paso de build (el runtime usa la real de
+# .env.production / la env del contenedor).
+RUN SECRET_KEY="build-only-collectstatic-not-a-runtime-secret" \
+    python manage.py collectstatic --noinput \
     && chmod +x /app/entrypoint.sh /app/worker-entrypoint.sh
 
 # ---- Worker: añade Chrome (chromium) + Xvfb para nodriver -------------------

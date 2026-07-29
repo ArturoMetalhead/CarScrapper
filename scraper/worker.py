@@ -20,7 +20,7 @@ from datetime import timedelta
 from typing import Callable
 
 from django.conf import settings
-from django.db import close_old_connections
+from django.db import close_old_connections, transaction
 from django.utils import timezone
 
 from . import webhooks
@@ -80,22 +80,23 @@ def _has_pending_ondemand() -> bool:
 def claim_next_job() -> ScrapeJob | None:
     """Take the next pending job and mark it 'running' atomically.
 
-    The update conditioned on status=PENDING prevents two runners from taking the
-    same job.
+    Uses SELECT ... FOR UPDATE SKIP LOCKED so several CONCURRENT workers each grab
+    a DIFFERENT pending job without racing (needed once this runs on a hosted
+    server with multiple workers). On SQLite (dev) row-locking is a no-op, which is
+    fine with the single dev worker.
     """
-    job = (
-        ScrapeJob.objects.filter(status=ScrapeJob.Status.PENDING)
-        .order_by("priority", "created_at")
-        .first()
-    )
-    if job is None:
-        return None
-    taken = ScrapeJob.objects.filter(
-        pk=job.pk, status=ScrapeJob.Status.PENDING
-    ).update(status=ScrapeJob.Status.RUNNING, started_at=timezone.now())
-    if not taken:
-        return None
-    job.refresh_from_db()
+    with transaction.atomic():
+        job = (
+            ScrapeJob.objects.select_for_update(skip_locked=True)
+            .filter(status=ScrapeJob.Status.PENDING)
+            .order_by("priority", "created_at")
+            .first()
+        )
+        if job is None:
+            return None
+        job.status = ScrapeJob.Status.RUNNING
+        job.started_at = timezone.now()
+        job.save(update_fields=["status", "started_at"])
     return job
 
 
@@ -294,6 +295,12 @@ class WorkerController:
         """Start the worker thread. Returns True if started, False if already running."""
         with self._lock:
             if self._thread and self._thread.is_alive():
+                if self._stop.is_set():
+                    # A stop was requested but the thread is still finishing its
+                    # in-flight job. Cancel the pending stop so the worker keeps
+                    # running instead of dying right after we report it as running.
+                    self._stop.clear()
+                    return True
                 return False
             self._stop.clear()
             self._thread = threading.Thread(

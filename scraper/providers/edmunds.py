@@ -91,8 +91,11 @@ class EdmundsProvider(NodriverFetchMixin, GenericProvider):
         """
         candidates = self._model_candidates(make, model, series)
         for candidate in candidates:
-            response = self.fetch_model(make, candidate, year, trim)
-            result = self.parse_model(response, make, model, year, trim)
+            try:
+                response = self.fetch_model(make, candidate, year, trim)
+                result = self.parse_model(response, make, model, year, trim)
+            except VehicleNotFound:
+                continue  # this slug 404'd — try the next candidate, don't abort
             if result.estimated_price is not None:
                 if not result.source_url:
                     result.source_url = self.source.build_model_url(make, candidate, year, trim)

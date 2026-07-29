@@ -288,36 +288,15 @@ def scrape_model_data(
             f"{make} {model}", {"config": "No sources with model scraping."}
         )
 
-    errors: dict[str, str] = {}
-    blocked_any = False
-    label = " ".join(str(x) for x in (year, make, model) if x)
-    for source in sources:
-        _set_activity(label, source.name, blocked_any)
-        provider = get_provider_class(source.provider_key)(source)
-        try:
-            result = provider.scrape_model(make, model, year, trim, series=series)
-        except BlockedError as exc:
-            # This source is blocked — record and FALL THROUGH to the next
-            # configured source (e.g. Edmunds blocked -> try CarGurus).
-            blocked_any = True
-            errors[source.name] = f"blocked (403): {exc}"
-            logger.warning("Source '%s' blocked; trying next source.", source.name)
-            continue
-        except VehicleNotFound as exc:
-            errors[source.name] = str(exc)
-            continue
-        except ScraperError as exc:
-            logger.warning("Source '%s' failed for %s %s: %s", source.name, make, model, exc)
-            errors[source.name] = str(exc)
-            continue
-        except Exception as exc:  # noqa: BLE001 — a broken site must not take down the worker
-            logger.exception("Unexpected error in '%s' for %s %s", source.name, make, model)
-            errors[source.name] = f"Unexpected error: {exc}"
-            continue
-
-        if result.estimated_price is None:
-            errors[source.name] = "Could not extract the model price."
-            continue
+    def _persist(source, result):
+        """Upsert (case-insensitive) the VehicleModel for a winning scrape result."""
+        # Keep the headline (estimated) price WITHIN the shown range. Some sources
+        # (e.g. Edmunds' new-car MSRP midpoint vs a thin used-listing range) can put
+        # the suggested price outside [low, high]; widen the range to include it
+        # instead of persisting an inverted min/max.
+        if result.price_low is not None and result.price_high is not None:
+            result.price_low = min(result.price_low, result.estimated_price)
+            result.price_high = max(result.price_high, result.estimated_price)
 
         defaults = {
             "estimated_price": result.estimated_price,
@@ -370,8 +349,56 @@ def scrape_model_data(
         logger.info("Model %s %s %s resolved by '%s'.", year, make, model, source.name)
         return vm
 
-    # No source produced a price. If a source was blocked, signal the worker to
-    # back off / rotate (recover); otherwise it's a genuine not-found.
+    errors: dict[str, str] = {}
+    blocked_any = False
+    fallback = None  # (source, result): a suggested price WITHOUT a min/max range
+    label = " ".join(str(x) for x in (year, make, model) if x)
+    for source in sources:
+        _set_activity(label, source.name, blocked_any)
+        provider = get_provider_class(source.provider_key)(source)
+        try:
+            result = provider.scrape_model(make, model, year, trim, series=series)
+        except BlockedError as exc:
+            # This source is blocked — record and FALL THROUGH to the next
+            # configured source (e.g. Edmunds blocked -> try CarGurus).
+            blocked_any = True
+            errors[source.name] = f"blocked (403): {exc}"
+            logger.warning("Source '%s' blocked; trying next source.", source.name)
+            continue
+        except VehicleNotFound as exc:
+            errors[source.name] = str(exc)
+            continue
+        except ScraperError as exc:
+            logger.warning("Source '%s' failed for %s %s: %s", source.name, make, model, exc)
+            errors[source.name] = str(exc)
+            continue
+        except Exception as exc:  # noqa: BLE001 — a broken site must not take down the worker
+            logger.exception("Unexpected error in '%s' for %s %s", source.name, make, model)
+            errors[source.name] = f"Unexpected error: {exc}"
+            continue
+
+        if result.estimated_price is None:
+            errors[source.name] = "Could not extract the model price."
+            continue
+
+        # A source that returns a suggested price but NO min/max range (e.g. Edmunds'
+        # new-car "suggests you pay $X") is a WEAK result — the UI would show only the
+        # suggested value. Remember it, but keep trying another source (e.g. CarGurus)
+        # that also yields a real range, so the cached row isn't "suggested only".
+        if result.price_low is None or result.price_high is None:
+            errors.setdefault(source.name, "Only a suggested price (no min/max range).")
+            if fallback is None:
+                fallback = (source, result)
+            continue
+
+        return _persist(source, result)
+
+    # No source gave a full range; use the best suggested-only result if we got one.
+    if fallback is not None:
+        return _persist(*fallback)
+
+    # Nothing at all. If a source was blocked, signal the worker to back off /
+    # rotate (recover); otherwise it's a genuine not-found.
     if blocked_any:
         raise BlockedError(f"All sources blocked or empty for {make} {model} {year}.")
     raise AllSourcesFailed(f"{make} {model} {year}", errors)

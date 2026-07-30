@@ -247,6 +247,33 @@ SCRAPER_EDMUNDS_INVENTORY_BOTH_ENDS = env.bool("SCRAPER_EDMUNDS_INVENTORY_BOTH_E
 SCRAPER_PRICE_MIN = env.int("SCRAPER_PRICE_MIN", default=1000)
 SCRAPER_PRICE_MAX = env.int("SCRAPER_PRICE_MAX", default=10_000_000)
 
+# --- VinAudit Market Value API -------------------------------------------
+# Paid HTTP JSON API that returns a car's market value (below/average/above) for a
+# VIN — the data behind vinaudit.com's car value calculator. Queried ONLY on-demand,
+# per VIN, from resolve_vin (never by the background worker/crawler). Without a key
+# the on-demand path is skipped (seed_sources marks the source inactive). Get a key
+# at https://www.vinaudit.com/vehicle-market-value-api (VA_DEMO_KEY no longer works).
+VINAUDIT_API_KEY = env("VINAUDIT_API_KEY", default="")
+# Full endpoint. Default is the current v2 API; switch to the legacy
+# https://marketvalue.vinaudit.com/getmarketvalue.php if your account uses it.
+VINAUDIT_ENDPOINT = env(
+    "VINAUDIT_ENDPOINT", default="https://marketvalue.vinaudit.com/v2/marketvalue"
+)
+# Market/currency: usa -> USD, canada -> CAD.
+VINAUDIT_COUNTRY = env("VINAUDIT_COUNTRY", default="usa")
+# Days of sales history to analyze (1-365).
+VINAUDIT_PERIOD = env.int("VINAUDIT_PERIOD", default=90)
+# Odometer to value at: a NUMBER of miles, or "average" (the default) to value at
+# market-average mileage. Per the v2 API, "average" is sent by OMITTING the param.
+VINAUDIT_MILEAGE = env("VINAUDIT_MILEAGE", default="average")
+# Per-VIN cache window (days). VinAudit is queried on-demand at most once per VIN
+# per this window; a VIN looked up again sooner is served from cache (no API call).
+# A re-query only happens when the user requests a VIN whose data is older than this.
+VINAUDIT_TTL_DAYS = env.int("VINAUDIT_TTL_DAYS", default=30)
+# Log a WARNING when a VinAudit response takes longer than this many seconds
+# (to spot the API degrading before it fully fails).
+VINAUDIT_SLOW_SECONDS = env.int("VINAUDIT_SLOW_SECONDS", default=8)
+
 # Timeout for NHTSA VIN decoding.
 SCRAPER_VIN_DECODE_TIMEOUT = env.int("SCRAPER_VIN_DECODE_TIMEOUT", default=15)
 # Hours a market data row (VehicleModel) is considered fresh before requeueing
@@ -304,3 +331,32 @@ SCRAPER_CRAWL_DISCOVERY_TTL_HOURS = env.int("SCRAPER_CRAWL_DISCOVERY_TTL_HOURS",
 # (webhook_url field) or per job.
 SCRAPER_WEBHOOK_URL = env("SCRAPER_WEBHOOK_URL", default="")
 SCRAPER_WEBHOOK_TIMEOUT = env.int("SCRAPER_WEBHOOK_TIMEOUT", default=10)
+
+# --- Logging -------------------------------------------------------------
+# Level for the app's own loggers ("scraper.*", incl. "scraper.vinaudit"). Set
+# SCRAPER_LOG_LEVEL=DEBUG to also see requests/cache-hits/latency; INFO (default)
+# shows queries, prices and failures; WARNING shows only degradations/errors.
+SCRAPER_LOG_LEVEL = env("SCRAPER_LOG_LEVEL", default="INFO")
+
+# Django applies DEFAULT_LOGGING first, then this on top (disable_existing_loggers
+# False), so we only ADD an always-on console handler + our app logger. The Django
+# default console handler is gated to DEBUG=True; ours logs in production too, so
+# VinAudit failures are visible on the server.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "app": {"format": "{asctime} {levelname} {name}: {message}", "style": "{"},
+    },
+    "handlers": {
+        "app_console": {"class": "logging.StreamHandler", "formatter": "app"},
+    },
+    "loggers": {
+        # All scraper logs, including the VinAudit on-demand path ("scraper.vinaudit").
+        "scraper": {
+            "handlers": ["app_console"],
+            "level": SCRAPER_LOG_LEVEL,
+            "propagate": False,
+        },
+    },
+}

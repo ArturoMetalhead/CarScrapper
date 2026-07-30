@@ -62,24 +62,14 @@ class ScraperSourceSerializer(serializers.ModelSerializer):
 
 
 class VehicleSerializer(serializers.ModelSerializer):
-    """Representation of a vehicle for API responses."""
+    """Representation of a vehicle for API responses.
+
+    price_low/price_high/price_kind come from the Vehicle's OWN fields, which hold
+    the VinAudit per-VIN valuation when present, or the copied model data otherwise.
+    """
 
     source_name = serializers.CharField(source="source.name", read_only=True, default=None)
-    market_updated_at = serializers.DateTimeField(
-        source="vehicle_model.updated_at", read_only=True, default=None
-    )
-    # Price range and provenance, inherited from the linked model data.
-    price_low = serializers.DecimalField(
-        source="vehicle_model.price_low", max_digits=12, decimal_places=2,
-        read_only=True, default=None,
-    )
-    price_high = serializers.DecimalField(
-        source="vehicle_model.price_high", max_digits=12, decimal_places=2,
-        read_only=True, default=None,
-    )
-    price_kind = serializers.CharField(
-        source="vehicle_model.price_kind", read_only=True, default=None
-    )
+    market_updated_at = serializers.SerializerMethodField()
 
     class Meta:
         model = Vehicle
@@ -87,9 +77,18 @@ class VehicleSerializer(serializers.ModelSerializer):
             "id", "vin", "make", "model", "year", "trim", "body_class",
             "mileage", "estimated_price", "price_low", "price_high", "price_kind",
             "currency", "source", "source_name", "source_url", "market_updated_at",
-            "raw_data", "created_at", "updated_at",
+            "vinaudit_priced_at", "raw_data", "created_at", "updated_at",
         ]
         read_only_fields = fields
+
+    def get_market_updated_at(self, obj):
+        """When the shown price was set: VinAudit's timestamp if it priced this VIN,
+        else the linked model data's, else the vehicle's own update time."""
+        if obj.vinaudit_priced_at:
+            return obj.vinaudit_priced_at
+        if obj.vehicle_model_id and obj.vehicle_model:
+            return obj.vehicle_model.updated_at
+        return obj.updated_at
 
 
 class VehicleModelSerializer(serializers.ModelSerializer):

@@ -1,6 +1,8 @@
 """Scraper API views."""
 import logging
 
+from django.contrib.auth import get_user
+
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
@@ -31,6 +33,23 @@ from .serializers import (
 from .services import STATUS_READY, VinDecodeError, resolve_model, resolve_vin
 
 logger = logging.getLogger("scraper.worker")
+
+
+def _request_is_staff(request) -> bool:
+    """True only for a logged-in staff session.
+
+    The customer-facing lookup endpoints run with authentication_classes=[] (so no
+    CSRF gate hits anonymous customers). DRF then sets request.user AND clobbers the
+    underlying request.user to AnonymousUser, so we read the logged-in user straight
+    from the session (django.contrib.auth.get_user) — the ops panel is
+    staff_member_required and its fetch sends the session cookie. `force` is honored
+    ONLY for such users, so an unauthenticated caller cannot use force to bypass
+    caches (e.g. burn paid VinAudit quota by re-forcing the same VIN). For an
+    anonymous request (no session) get_user returns AnonymousUser without a DB hit.
+    """
+    django_request = getattr(request, "_request", request)
+    user = get_user(django_request)
+    return bool(user is not None and user.is_authenticated and user.is_staff)
 
 
 class HealthView(APIView):
@@ -65,7 +84,8 @@ class VehicleLookupView(APIView):
         payload.is_valid(raise_exception=True)
         vin = payload.validated_data["vin"]
         webhook_url = payload.validated_data.get("webhook_url", "")
-        force = payload.validated_data.get("force", False)
+        # force triggers a paid VinAudit re-query bypassing the cache — staff only.
+        force = payload.validated_data.get("force", False) and _request_is_staff(request)
 
         try:
             vehicle, state, job = resolve_vin(vin, webhook_url=webhook_url, force=force)
@@ -112,7 +132,9 @@ class VehiclePrewarmView(APIView):
         results = []
         for vin in payload.validated_data["vins"]:
             try:
-                _, state, _ = resolve_vin(vin, webhook_url=webhook_url)
+                # Prewarm is PROACTIVE (not a user request), so it must not spend
+                # VinAudit quota: only warm the model cache (Edmunds/CarGurus).
+                _, state, _ = resolve_vin(vin, webhook_url=webhook_url, allow_vinaudit=False)
                 results.append({"vin": vin, "status": state})
             except VinDecodeError as exc:
                 results.append({"vin": vin, "status": "error", "detail": str(exc)})
@@ -142,7 +164,8 @@ class ModelLookupView(APIView):
         model = payload.validated_data["model"]
         year = payload.validated_data.get("year")
         webhook_url = payload.validated_data.get("webhook_url", "")
-        force = payload.validated_data.get("force", False)
+        # force re-scrapes bypassing the cache — staff only (see _request_is_staff).
+        force = payload.validated_data.get("force", False) and _request_is_staff(request)
 
         vm, state, job = resolve_model(make, model, year, webhook_url=webhook_url, force=force)
         data = VehicleModelSerializer(vm).data if vm else None

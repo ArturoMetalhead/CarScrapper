@@ -334,7 +334,32 @@ class Vehicle(models.Model):
     estimated_price = models.DecimalField(
         "Precio estimado", max_digits=12, decimal_places=2, null=True, blank=True
     )
+    # Price range and provenance for THIS VIN. Filled by VinAudit (per-VIN, on
+    # demand) or copied from the linked VehicleModel (Edmunds/CarGurus).
+    price_low = models.DecimalField(
+        "Precio (mín)", max_digits=12, decimal_places=2, null=True, blank=True
+    )
+    price_high = models.DecimalField(
+        "Precio (máx)", max_digits=12, decimal_places=2, null=True, blank=True
+    )
+    price_kind = models.CharField(
+        "Tipo de precio", max_length=32, blank=True, default="",
+        help_text="vinaudit_market, edmunds_market, cargurus_listings_median, ...",
+    )
     currency = models.CharField("Moneda", max_length=8, default="USD", blank=True)
+
+    # VinAudit is a paid, rate-limited API queried ONLY on-demand, per VIN.
+    # `vinaudit_priced_at`: when VinAudit last successfully priced this VIN (also
+    # marks the VIN as VinAudit-owned, so no scraper overwrites it).
+    # `vinaudit_checked_at`: when VinAudit was last queried (success OR definitive
+    # not-found) — gates re-querying so the same VIN isn't looked up again within
+    # VINAUDIT_TTL_DAYS.
+    vinaudit_priced_at = models.DateTimeField(
+        "Precio VinAudit (fecha)", null=True, blank=True
+    )
+    vinaudit_checked_at = models.DateTimeField(
+        "VinAudit consultado (fecha)", null=True, blank=True, db_index=True
+    )
 
     source = models.ForeignKey(
         ScraperSource,

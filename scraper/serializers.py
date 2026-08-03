@@ -113,7 +113,7 @@ class ScrapeJobSerializer(serializers.ModelSerializer):
         model = ScrapeJob
         fields = [
             "id", "make", "model", "year", "trim", "vin",
-            "status", "attempts",
+            "status", "attempts", "last_error",
             "created_at", "started_at", "finished_at",
         ]
         read_only_fields = fields
@@ -130,6 +130,9 @@ class VinLookupSerializer(serializers.Serializer):
     webhook_url = serializers.URLField(required=False, allow_blank=True, default="")
     # force=True re-scrapes even if cached data is fresh (admin "re-scrape" button).
     force = serializers.BooleanField(required=False, default=False)
+    # use_vinaudit=True opts INTO the paid, per-VIN VinAudit valuation (its own
+    # button, with a cost warning). Default False -> free sources (Edmunds/CarGurus).
+    use_vinaudit = serializers.BooleanField(required=False, default=False)
 
     def validate_vin(self, value: str) -> str:
         return _validate_vin(value)

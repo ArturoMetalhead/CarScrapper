@@ -27,3 +27,6 @@ db.sqlite3-shm
 .idea/
 .DS_Store
 Thumbs.db
+
+# Override local de docker-compose (clave desechable)
+docker-compose.local.yml

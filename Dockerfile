@@ -30,9 +30,13 @@ COPY . .
 # DJANGO_ENV=production, settings.py exige un SECRET_KEY fuerte: le pasamos una
 # clave DESECHABLE solo para este paso de build (el runtime usa la real de
 # .env.production / la env del contenedor).
-RUN SECRET_KEY="build-only-collectstatic-not-a-runtime-secret" \
-    python manage.py collectstatic --noinput \
-    && chmod +x /app/entrypoint.sh /app/worker-entrypoint.sh
+# Normalize CRLF->LF on the entrypoints (Windows checkouts break the shebang:
+# "exec /app/entrypoint.sh: no such file or directory"), make them executable,
+# then collect static.
+RUN sed -i 's/\r$//' /app/entrypoint.sh /app/worker-entrypoint.sh \
+    && chmod +x /app/entrypoint.sh /app/worker-entrypoint.sh \
+    && SECRET_KEY="build-only-collectstatic-not-a-runtime-secret" \
+       python manage.py collectstatic --noinput
 
 # ---- Worker: añade Chrome (chromium) + Xvfb para nodriver -------------------
 FROM base AS worker

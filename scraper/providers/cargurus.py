@@ -38,6 +38,43 @@ _MAKE_IDS = {
     "mercedes-benz": "m43", "mercedes": "m43", "mitsubishi": "m46", "porsche": "m48",
     "subaru": "m53", "volkswagen": "m55", "volvo": "m56", "infiniti": "m84",
     "tesla": "m112", "ram": "m191", "genesis": "m203",
+    # --- Cobertura extendida: lujo/exóticas, importadas, EV nuevas y
+    # descontinuadas. Cada makeId sale de la reference data real de CarGurus y fue
+    # identificado por CONSENSO de 3 agentes (>=2/3) según sus modelos distintivos.
+    # (Los de arriba se mantienen como autoritativos: p.ej. ram=m191, dodge=m24.) ---
+    "bentley": "m20", "ferrari": "m25", "lamborghini": "m34", "maserati": "m40",
+    "aston martin": "m110", "aston-martin": "m110", "mclaren": "m141",
+    "rolls-royce": "m49", "rolls royce": "m49",
+    "hummer": "m27", "isuzu": "m30", "jaguar": "m31", "lotus": "m39",
+    "maybach": "m41", "mini": "m45", "saab": "m50", "saturn": "m51",
+    "scion": "m52", "suzuki": "m54", "am general": "m79", "daewoo": "m81",
+    "eagle": "m82", "geo": "m83", "oldsmobile": "m85", "panoz": "m86",
+    "plymouth": "m87", "daihatsu": "m95", "datsun": "m96", "delorean": "m97",
+    "fiat": "m98", "lancia": "m100", "merkur": "m101", "mg": "m102",
+    "opel": "m103", "peugeot": "m104", "pininfarina": "m105", "renault": "m106",
+    "saleen": "m108", "sterling": "m109", "smart": "m111", "bugatti": "m113",
+    "holden": "m115", "vauxhall": "m116", "citroen": "m117", "citroën": "m117",
+    "skoda": "m118", "škoda": "m118", "austin": "m119", "pagani": "m121",
+    "valiant": "m122", "simca": "m123", "alfa romeo": "m124", "seat": "m125",
+    "hsv": "m126", "ariel": "m128", "koenigsegg": "m129", "tvr": "m130",
+    "rover": "m131", "sunbeam": "m132", "amc": "m133", "trabant": "m134",
+    "shelby": "m135", "triumph": "m137", "austin-healey": "m139", "noble": "m142",
+    "spyker": "m143", "hillman": "m144", "reliant": "m147", "zastava": "m148",
+    "caterham": "m149", "morgan": "m150", "morris": "m151", "leyland": "m152",
+    "pontiac": "m153", "lada": "m155", "duesenberg": "m159", "proton": "m160",
+    "talbot": "m161", "humber": "m162", "studebaker": "m164", "princess": "m169",
+    "edsel": "m174", "wartburg": "m175", "packard": "m176", "peel": "m177",
+    "perodua": "m178", "de tomaso": "m179", "cizeta": "m182", "fisker": "m183",
+    "hudson": "m186", "ssc": "m187", "kaiser": "m189", "bricklin": "m196",
+    "nash": "m199", "jensen": "m200", "bristol": "m210", "daimler": "m211",
+    "allard": "m212", "auburn": "m213", "willys": "m214", "cord": "m215",
+    "messerschmitt": "m219", "delahaye": "m225", "facel vega": "m226",
+    "autozam": "m229", "karma": "m233", "autobianchi": "m234", "stutz": "m238",
+    "ac": "m240", "intermeccanica": "m241", "rivian": "m243", "swallow": "m251",
+    "iso": "m253", "qvale": "m254", "rambler": "m262", "bertone": "m266",
+    "riley": "m267", "lucid": "m274", "lucid motors": "m274", "vinfast": "m279",
+    "abarth": "m280", "imperial": "m281", "ineos": "m283", "polestar": "m260",
+    "ssangyong": "m288", "mitsuoka": "m292", "zimmer": "m295",
 }
 
 # CarGurus reference data cache (makeId -> [{modelName, modelId}, ...]).
@@ -49,8 +86,15 @@ _CG_BLOCK = ("px-captcha", "perimeterx", "access to this page has been denied")
 
 
 def _norm(text: str) -> str:
-    """Normalize a model name for matching: lowercase, alphanumerics only."""
+    """Normalize a name for matching: lowercase, alphanumerics only."""
     return re.sub(r"[^a-z0-9]", "", (text or "").lower())
+
+
+# Normalized make-name -> makeId, so the make lookup is spacing/hyphen/diacritic
+# insensitive (matching how _resolve_model already normalizes model names). Built
+# from _MAKE_IDS above; the hand-added punctuation-variant keys collapse to the same
+# normalized form, so a lookup like "Mercedes-Benz"/"MERCEDES BENZ" both hit m43.
+_MAKE_IDS_NORM = {_norm(name): mid for name, mid in _MAKE_IDS.items()}
 
 
 def _title_year(title: str):
@@ -70,7 +114,7 @@ class CarGurusProvider(NodriverFetchMixin, GenericProvider):
     def scrape_model(
         self, make: str, model: str, year=None, trim: str = "", series: str = ""
     ) -> ScrapedVehicle:
-        make_id = _MAKE_IDS.get((make or "").strip().lower())
+        make_id = _MAKE_IDS_NORM.get(_norm(make))
         if not make_id:
             raise VehicleNotFound(f"CarGurus: make '{make}' not in the id map.")
 

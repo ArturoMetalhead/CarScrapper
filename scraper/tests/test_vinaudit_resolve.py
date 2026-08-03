@@ -195,6 +195,53 @@ class VinAuditHotResolveTest(TestCase):
         src.assert_not_called()
         self.assertEqual(state, services.STATUS_PROCESSING)  # went to model flow
 
+    def test_vinaudit_only_success_returns_price(self):
+        _SCRAPE["result"] = _va_result()
+        vehicle, state, job = self._resolve(vinaudit_only=True)
+        self.assertEqual(state, services.STATUS_READY)
+        self.assertEqual(vehicle.estimated_price, Decimal("7044.00"))
+
+    def test_vinaudit_only_served_from_cache_no_error(self):
+        """A VIN already priced by VinAudit within TTL: the paid button returns the
+        CACHED data (ready), NOT an error, and makes NO new API call (no re-charge)."""
+        _SCRAPE["result"] = _va_result()
+        self._resolve(vinaudit_only=True)              # 1st: prices + caches (1 call)
+        vehicle, state, job = self._resolve(vinaudit_only=True)  # 2nd: within TTL
+        self.assertEqual(state, services.STATUS_READY)  # data, not error
+        self.assertEqual(vehicle.estimated_price, Decimal("7044.00"))
+        self.assertIsNone(job)
+        self.assertEqual(len(_CALLS), 1)                # served from cache, no 2nd call
+
+    def test_vinaudit_only_keeps_stale_cache_when_requery_fails(self):
+        """A cached VIN past the TTL whose re-query fails still returns the cached
+        VinAudit price (not an error)."""
+        _SCRAPE["result"] = _va_result()
+        self._resolve(vinaudit_only=True)  # price + cache
+        Vehicle.objects.filter(vin=VIN).update(
+            vinaudit_priced_at=timezone.now() - timedelta(days=40),
+            vinaudit_checked_at=timezone.now() - timedelta(days=40),
+        )
+        _SCRAPE["result"] = BlockedError("rate limit")  # re-query fails
+        vehicle, state, job = self._resolve(vinaudit_only=True)
+        self.assertEqual(state, services.STATUS_READY)  # kept cached price, no error
+        self.assertEqual(vehicle.estimated_price, Decimal("7044.00"))
+
+    def test_vinaudit_only_errors_on_no_data(self):
+        """Paid button: VinAudit not-found -> error, NO free fallback / no job."""
+        _SCRAPE["result"] = VehicleNotFound("no data")
+        with self.assertRaises(services.VinAuditLookupError) as cm:
+            self._resolve(vinaudit_only=True)
+        self.assertEqual(cm.exception.reason, "no_data")
+        self.assertEqual(ScrapeJob.objects.count(), 0)  # nothing enqueued
+
+    def test_vinaudit_only_errors_on_unavailable(self):
+        """Paid button: VinAudit down (rate limit/etc.) -> error, no fallback."""
+        _SCRAPE["result"] = BlockedError("rate limit")
+        with self.assertRaises(services.VinAuditLookupError) as cm:
+            self._resolve(vinaudit_only=True)
+        self.assertEqual(cm.exception.reason, "unavailable")
+        self.assertEqual(ScrapeJob.objects.count(), 0)
+
 
 class VinAuditModelScrapeProtectionTest(TestCase):
     """A background model scrape must not overwrite a VinAudit-priced VIN."""
@@ -324,6 +371,205 @@ class ForceGateTest(TestCase):
         )
         self.assertEqual(r.status_code, 200)
         self.assertTrue(mock_resolve.call_args.kwargs["force"])  # force honored
+
+    @patch("scraper.views.resolve_vin")
+    def test_normal_lookup_does_not_use_vinaudit(self, mock_resolve):
+        mock_resolve.return_value = (self.vehicle, services.STATUS_READY, None)
+        r = self.client.post("/api/vehicles/lookup/", {"vin": VIN}, format="json")
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(mock_resolve.call_args.kwargs["allow_vinaudit"])  # free search
+
+    @patch("scraper.views.resolve_vin")
+    def test_use_vinaudit_opts_in(self, mock_resolve):
+        mock_resolve.return_value = (self.vehicle, services.STATUS_READY, None)
+        r = self.client.post(
+            "/api/vehicles/lookup/", {"vin": VIN, "use_vinaudit": True}, format="json"
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(mock_resolve.call_args.kwargs["allow_vinaudit"])  # opted in
+        self.assertTrue(mock_resolve.call_args.kwargs["vinaudit_only"])  # no free fallback
+
+    @patch("scraper.views.resolve_vin")
+    def test_paid_lookup_no_data_returns_404(self, mock_resolve):
+        mock_resolve.side_effect = services.VinAuditLookupError("no_data")
+        r = self.client.post(
+            "/api/vehicles/lookup/", {"vin": VIN, "use_vinaudit": True}, format="json"
+        )
+        self.assertEqual(r.status_code, 404)
+        self.assertIn("VinAudit", r.json()["detail"])
+
+    @patch("scraper.views.resolve_vin")
+    def test_paid_lookup_unavailable_returns_503(self, mock_resolve):
+        mock_resolve.side_effect = services.VinAuditLookupError("unavailable")
+        r = self.client.post(
+            "/api/vehicles/lookup/", {"vin": VIN, "use_vinaudit": True}, format="json"
+        )
+        self.assertEqual(r.status_code, 503)
+        self.assertEqual(r.json()["status"], "error")
+
+
+class ThrottleTest(TestCase):
+    """The paid VinAudit lookup is uncapped; free lookups keep the anon cap."""
+
+    def _req(self, body):
+        from rest_framework.parsers import JSONParser
+        from rest_framework.request import Request
+        from rest_framework.test import APIRequestFactory
+
+        raw = APIRequestFactory().post("/api/vehicles/lookup/", body, format="json")
+        raw.META["REMOTE_ADDR"] = "203.0.113.7"
+        return Request(raw, parsers=[JSONParser()])
+
+    def test_paid_lookup_is_not_capped(self):
+        from django.core.cache import cache
+        from scraper.views import FreeLookupThrottle
+
+        cache.clear()
+        req = self._req({"vin": VIN, "use_vinaudit": True})
+        # Far more than any anon rate — all allowed (no cap on the paid lookup).
+        self.assertTrue(all(
+            FreeLookupThrottle().allow_request(req, None) for _ in range(200)
+        ))
+
+    def test_free_lookup_is_capped(self):
+        from django.core.cache import cache
+        from rest_framework.settings import api_settings
+        from scraper.views import FreeLookupThrottle
+
+        cache.clear()
+        limit = int(api_settings.DEFAULT_THROTTLE_RATES["anon"].split("/")[0])
+        req = self._req({"vin": VIN})  # free lookup
+        allowed = sum(
+            1 for _ in range(limit + 5)
+            if FreeLookupThrottle().allow_request(req, None)
+        )
+        self.assertEqual(allowed, limit)  # free lookups still hit the anon cap
+
+    def test_string_false_does_not_bypass_cap(self):
+        """#2: use_vinaudit as the string "false" is a FREE lookup (serializer parses
+        it to False) and must still be capped — not read as truthy to skip the cap."""
+        from django.core.cache import cache
+        from rest_framework.settings import api_settings
+        from scraper.views import FreeLookupThrottle
+
+        cache.clear()
+        limit = int(api_settings.DEFAULT_THROTTLE_RATES["anon"].split("/")[0])
+        req = self._req({"vin": VIN, "use_vinaudit": "false"})
+        allowed = sum(
+            1 for _ in range(limit + 5)
+            if FreeLookupThrottle().allow_request(req, None)
+        )
+        self.assertEqual(allowed, limit)  # capped, NOT bypassed
+
+
+class LinkModelGuardTest(TestCase):
+    """#5/#13: _link_model is an atomic, write-only-when-changed choke point."""
+
+    def _vm(self):
+        edm = ScraperSource.objects.create(
+            name="Edmunds", slug="edmunds", provider_key="edmunds", model_path_template="/x/",
+        )
+        return VehicleModel.objects.create(
+            make="Toyota", model="Corolla", year=2014, trim="LE",
+            estimated_price=Decimal("6000.00"), price_low=Decimal("5000.00"),
+            price_high=Decimal("7000.00"), price_kind="edmunds_market", source=edm,
+        )
+
+    def test_writes_then_skips_unchanged(self):
+        vm = self._vm()
+        veh = Vehicle.objects.create(vin=VIN, make="Toyota", model="Corolla", year=2014, trim="LE")
+        self.assertTrue(services._link_model(veh, vm))          # first: writes
+        self.assertEqual(veh.estimated_price, Decimal("6000.00"))
+        self.assertFalse(services._link_model(veh, vm))         # #13: unchanged -> no write
+
+    def test_atomic_guard_vs_concurrent_vinaudit(self):
+        """#5: a VinAudit valuation committed in the DB (stale in-memory guard) is not
+        overwritten — the conditional UPDATE matches 0 rows."""
+        vm = self._vm()
+        veh = Vehicle.objects.create(
+            vin=VIN, make="Toyota", model="Corolla", year=2014, trim="LE",
+            estimated_price=Decimal("9999.00"), price_kind="vinaudit_market",
+        )
+        # Concurrent VinAudit write lands in the DB; our in-memory instance is stale.
+        Vehicle.objects.filter(pk=veh.pk).update(vinaudit_priced_at=timezone.now())
+        veh.vinaudit_priced_at = None  # stale read: guard would pass in-memory
+
+        wrote = services._link_model(veh, vm)
+        self.assertFalse(wrote)  # conditional UPDATE (WHERE vinaudit_priced_at IS NULL) = 0 rows
+        veh.refresh_from_db()
+        self.assertEqual(veh.estimated_price, Decimal("9999.00"))  # VinAudit price preserved
+        self.assertEqual(veh.price_kind, "vinaudit_market")
+
+
+class WebhookPayloadTest(TestCase):
+    """#10: the webhook reports the VIN's OWN price (VinAudit when set), not the model."""
+
+    def test_prefers_vehicle_own_price(self):
+        from scraper import webhooks
+
+        veh = Vehicle.objects.create(
+            vin=VIN, make="Toyota", model="Corolla", year=2014,
+            estimated_price=Decimal("7044.00"), price_kind="vinaudit_market",
+        )
+        vm = VehicleModel.objects.create(
+            make="Toyota", model="Corolla", year=2014, trim="",
+            estimated_price=Decimal("6000.00"), price_kind="edmunds_market",
+        )
+        job = ScrapeJob.objects.create(
+            make="Toyota", model="Corolla", year=2014, vin=VIN, status="done",
+        )
+        payload = webhooks._payload(job, vm, veh)
+        self.assertEqual(payload["estimated_price"], "7044.00")  # VinAudit, not vm's 6000
+        self.assertEqual(payload["price_kind"], "vinaudit_market")
+
+
+class VinAuditEnabledFlagTest(TestCase):
+    """services.vinaudit_enabled() gates the paid button (key AND active source)."""
+
+    def test_disabled_without_key(self):
+        self.assertFalse(services.vinaudit_enabled())
+
+    @override_settings(VINAUDIT_API_KEY="TESTKEY")
+    def test_enabled_with_key_and_active_source(self):
+        ScraperSource.objects.create(
+            name="VinAudit", slug="vinaudit", provider_key="vinaudit",
+            model_path_template="", is_active=True,
+        )
+        self.assertTrue(services.vinaudit_enabled())
+
+    @override_settings(VINAUDIT_API_KEY="TESTKEY")
+    def test_disabled_when_source_inactive(self):
+        ScraperSource.objects.create(
+            name="VinAudit", slug="vinaudit", provider_key="vinaudit",
+            model_path_template="", is_active=False,
+        )
+        self.assertFalse(services.vinaudit_enabled())
+
+
+class VinAuditButtonVisibilityTest(TestCase):
+    """The paid button (and its cost notice) render only when VinAudit is enabled."""
+
+    def _html(self):
+        return self.client.get("/", HTTP_HOST="localhost").content.decode()
+
+    def test_button_hidden_when_disabled(self):
+        html = self._html()  # no key -> disabled
+        self.assertNotIn("Valorar con VinAudit", html)
+        self.assertNotIn('id="vinauditBox"', html)
+
+    @override_settings(
+        VINAUDIT_API_KEY="TESTKEY",
+        VINAUDIT_COST_NOTICE="Cada consulta cuesta $0.50 por uso.",
+    )
+    def test_button_and_notice_shown_when_enabled(self):
+        ScraperSource.objects.create(
+            name="VinAudit", slug="vinaudit", provider_key="vinaudit",
+            model_path_template="", is_active=True,
+        )
+        html = self._html()
+        self.assertIn("Valorar con VinAudit", html)
+        self.assertIn('id="vinauditBox"', html)
+        self.assertIn("Cada consulta cuesta $0.50 por uso.", html)
 
 
 class BackfillMigrationTest(TestCase):

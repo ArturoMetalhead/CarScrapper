@@ -47,12 +47,25 @@ __all__ = [
     "apply_model_to_vehicles",
     "mark_model_failure",
     "is_fresh",
+    "vinaudit_enabled",
     "AllSourcesFailed",
     "ScraperError",
     "VehicleNotFound",
     "VinDecodeError",
+    "VinAuditLookupError",
     "ScrapedVehicle",
 ]
+
+
+class VinAuditLookupError(Exception):
+    """A VinAudit-ONLY lookup (the paid button) could not return a value and must
+    NOT fall back to the free sources. `reason` is 'no_data' (VinAudit has no value
+    for this VIN) or 'unavailable' (rate limit / bad key / network / disabled)."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
+
 
 # Resolution states returned by resolve_vin.
 STATUS_READY = "ready"
@@ -83,6 +96,20 @@ def _vinaudit_source() -> "ScraperSource | None":
         .order_by("priority")
         .first()
     )
+
+
+def vinaudit_enabled() -> bool:
+    """True if the on-demand VinAudit lookup is actually usable — an API key is set
+    AND an active `vinaudit` source exists (same gate as _resolve_via_vinaudit). Used
+    to show/hide the paid VinAudit button.
+
+    The context processor wraps this in a SimpleLazyObject, so the ScraperSource query
+    only runs if a template actually reads the flag (i.e. the dashboard) — not on every
+    admin/DRF/404 render. No key -> no query at all.
+    """
+    if not str(getattr(settings, "VINAUDIT_API_KEY", "") or "").strip():
+        return False
+    return _vinaudit_source() is not None
 
 
 def _set_activity(label: str, source: str, after_block: bool) -> None:
@@ -122,16 +149,40 @@ def _find_model(
     )
 
 
-def _link_model(vehicle: Vehicle, vm: VehicleModel) -> None:
-    """Copy the model's market price (and range) onto the VIN and save.
+def _link_model(vehicle: Vehicle, vm: VehicleModel) -> bool:
+    """Copy the model's market price (and range) onto the VIN. Returns True if it wrote.
 
-    Single choke point for the invariant: a VIN already priced by VinAudit is
-    authoritative and is NEVER overwritten by a scraper's model data. Guarding here
-    (not only in apply_model_to_vehicles) also protects the resolve_vin fallback
-    paths — prewarm (allow_vinaudit=False) and a disabled/absent VinAudit source.
+    - A VIN already priced by VinAudit is authoritative and is NEVER overwritten — and
+      the guard is enforced ATOMICALLY via a conditional UPDATE (WHERE vinaudit_priced_at
+      IS NULL), so a VinAudit valuation committing concurrently can't be clobbered by a
+      stale in-memory read.
+    - Skips the write entirely when the VIN is already linked to this exact model and
+      price, so a plain cache-hit read doesn't bump updated_at / reorder the recent list.
     """
-    if vehicle.vinaudit_priced_at is not None:
-        return
+    if vehicle.vinaudit_priced_at is not None or (
+        vehicle.vehicle_model_id == vm.id
+        and vehicle.estimated_price == vm.estimated_price
+        and vehicle.price_low == vm.price_low
+        and vehicle.price_high == vm.price_high
+        and vehicle.price_kind == vm.price_kind
+    ):
+        return False
+
+    now = timezone.now()
+    updated = Vehicle.objects.filter(pk=vehicle.pk, vinaudit_priced_at__isnull=True).update(
+        vehicle_model=vm,
+        estimated_price=vm.estimated_price,
+        price_low=vm.price_low,
+        price_high=vm.price_high,
+        price_kind=vm.price_kind,
+        currency=vm.currency or "USD",
+        source=vm.source,
+        source_url=vm.source_url,
+        updated_at=now,
+    )
+    if not updated:  # a concurrent VinAudit valuation won the row — leave it alone
+        return False
+    # Keep the in-memory instance consistent for callers that read it afterward.
     vehicle.vehicle_model = vm
     vehicle.estimated_price = vm.estimated_price
     vehicle.price_low = vm.price_low
@@ -140,14 +191,13 @@ def _link_model(vehicle: Vehicle, vm: VehicleModel) -> None:
     vehicle.currency = vm.currency or "USD"
     vehicle.source = vm.source
     vehicle.source_url = vm.source_url
-    vehicle.save(update_fields=[
-        "vehicle_model", "estimated_price", "price_low", "price_high", "price_kind",
-        "currency", "source", "source_url", "updated_at",
-    ])
+    vehicle.updated_at = now
+    return True
 
 
 def resolve_vin(
-    vin: str, webhook_url: str = "", force: bool = False, allow_vinaudit: bool = True
+    vin: str, webhook_url: str = "", force: bool = False,
+    allow_vinaudit: bool = True, vinaudit_only: bool = False,
 ) -> tuple[Vehicle, str, "ScrapeJob | None"]:
     """Resolve a VIN's market price.
 
@@ -161,11 +211,15 @@ def resolve_vin(
     `force=True` re-queries VinAudit and re-scrapes even if cached (admin button).
     `allow_vinaudit=False` skips the VinAudit call entirely — used by the proactive
     prewarm so background/bulk work never spends VinAudit quota.
+    `vinaudit_only=True` (the paid VinAudit button) means VinAudit OR error: if
+    VinAudit can't return a value, raise VinAuditLookupError instead of falling back
+    to the free sources.
 
     Returns (vehicle, status, job); job is None when served without enqueuing.
 
     Raises:
         VinDecodeError: if NHTSA cannot decode the VIN.
+        VinAuditLookupError: if vinaudit_only and VinAudit couldn't resolve the VIN.
     """
     vehicle = Vehicle.objects.select_related("vehicle_model", "source").filter(vin=vin).first()
 
@@ -189,10 +243,15 @@ def resolve_vin(
             },
         )
 
-    # 1. Hot, on-demand VinAudit (per-VIN, ~monthly TTL). Returns "served" when the
-    # vehicle now carries a VinAudit price to return, or "fallthrough" otherwise.
-    if allow_vinaudit and _resolve_via_vinaudit(vehicle, force) == "served":
-        return vehicle, STATUS_READY, None
+    # 1. Hot, on-demand VinAudit (per-VIN, ~monthly TTL). "served" -> the vehicle now
+    # carries a VinAudit price; "no_data"/"unavailable" -> VinAudit couldn't value it.
+    if allow_vinaudit:
+        outcome = _resolve_via_vinaudit(vehicle, force)
+        if outcome == "served":
+            return vehicle, STATUS_READY, None
+        if vinaudit_only:
+            # Paid VinAudit button: no free fallback — surface the failure.
+            raise VinAuditLookupError(outcome)  # 'no_data' | 'unavailable'
 
     # 2. Model-cache flow (Edmunds/CarGurus via the background worker).
     vm = _find_model(make, model, year, trim)
@@ -217,19 +276,21 @@ def _resolve_via_vinaudit(vehicle: Vehicle, force: bool) -> str:
     and a definitive "not found" are both cached for that window, so the same VIN is
     not re-queried again and again.
 
-    Returns:
+    Returns one of:
         "served"      -> the vehicle now holds a VinAudit price; caller returns it.
-        "fallthrough" -> VinAudit has no data (or is disabled); use the scrapers.
+        "no_data"     -> VinAudit definitively has no value for this VIN.
+        "unavailable" -> VinAudit failed (rate limit / bad key / network) or is off.
+    The caller decides what to do (free fallback, or error for the paid button).
     """
     # Cheap gate first (no DB): if there is no API key, VinAudit is off — skip the
     # ScraperSource query entirely.
     if not str(getattr(settings, "VINAUDIT_API_KEY", "") or "").strip():
-        va_logger.debug("VinAudit disabled (no API key); using scrapers for %s.", vehicle.vin)
-        return "fallthrough"
+        va_logger.debug("VinAudit disabled (no API key) for %s.", vehicle.vin)
+        return "unavailable"
     source = _vinaudit_source()
     if source is None:
-        va_logger.debug("VinAudit has no active source; using scrapers for %s.", vehicle.vin)
-        return "fallthrough"  # VinAudit disabled/unconfigured
+        va_logger.debug("VinAudit has no active source for %s.", vehicle.vin)
+        return "unavailable"  # VinAudit disabled/unconfigured
 
     now = timezone.now()
     owns_price = vehicle.vinaudit_priced_at is not None  # already priced by VinAudit
@@ -238,13 +299,28 @@ def _resolve_via_vinaudit(vehicle: Vehicle, force: bool) -> str:
 
     if not should_query:
         # Queried recently: serve the cached VinAudit price if we have one, else the
-        # negative is still valid — fall back to the scrapers without re-asking.
+        # cached negative is still valid (no value) — no re-query.
         age_days = (now - checked).days if checked else None
         va_logger.debug(
             "VinAudit cache hit for %s (checked %s day(s) ago, within TTL); no API call.",
             vehicle.vin, age_days,
         )
-        return "served" if owns_price else "fallthrough"
+        return "served" if owns_price else "no_data"
+
+    # Atomic claim (compare-and-swap on the checked_at we read): only ONE concurrent
+    # request for this VIN wins and reaches the BILLED call — this prevents double
+    # charging from concurrent requests or a double-clicked button.
+    claimed = Vehicle.objects.filter(
+        pk=vehicle.pk, vinaudit_checked_at=checked
+    ).update(vinaudit_checked_at=now)
+    if claimed != 1:
+        # Lost the race — another request is querying (or just did). Serve what's cached.
+        vehicle.refresh_from_db()
+        va_logger.info(
+            "VinAudit lookup for %s deduped (concurrent claim); serving cached.", vehicle.vin
+        )
+        return "served" if vehicle.vinaudit_priced_at is not None else "no_data"
+    vehicle.vinaudit_checked_at = now  # reflect the claim in memory
 
     reason = "forced" if force else ("never-queried" if checked is None else "older-than-TTL")
     va_logger.info("VinAudit query for %s (reason=%s).", vehicle.vin, reason)
@@ -252,32 +328,25 @@ def _resolve_via_vinaudit(vehicle: Vehicle, force: bool) -> str:
     try:
         sv = provider.scrape(vehicle.vin)
     except VehicleNotFound:
-        # VinAudit genuinely has no value for this VIN. Cache the negative for the
-        # TTL so we don't re-ask, and fall back to the scrapers — unless we already
-        # hold a VinAudit price, which we keep rather than downgrade.
-        vehicle.vinaudit_checked_at = now
-        vehicle.save(update_fields=["vinaudit_checked_at", "updated_at"])
+        # No value for this VIN. The claim already persisted vinaudit_checked_at=now, so
+        # the negative is cached for the TTL. Keep any prior VinAudit price.
         va_logger.info(
-            "VinAudit has no value for %s; cached negative for ~%s day(s), %s.",
+            "VinAudit has no value for %s; cached negative for ~%s day(s)%s.",
             vehicle.vin, _vinaudit_ttl().days,
-            "keeping prior VinAudit price" if owns_price else "using scrapers",
+            " (keeping prior VinAudit price)" if owns_price else "",
         )
-        return "served" if owns_price else "fallthrough"
+        return "served" if owns_price else "no_data"
     except (BlockedError, ScraperError) as exc:
-        # Rate-limited / transient / misconfigured: do NOT cache the check (so a later
-        # request can retry). Keep any prior VinAudit price; otherwise use the scrapers.
-        # (The provider already logged the specific cause at WARNING/ERROR.)
-        if owns_price:
-            va_logger.warning(
-                "VinAudit unavailable for %s (%s); serving the CACHED VinAudit price (stale).",
-                vehicle.vin, exc,
-            )
-        else:
-            va_logger.warning(
-                "VinAudit unavailable for %s (%s); falling back to the scrapers.",
-                vehicle.vin, exc,
-            )
-        return "served" if owns_price else "fallthrough"
+        # Rate-limited / transient / misconfigured: REVERT the claim so a later request
+        # can retry (don't lock the VIN out for the whole TTL). Keep any prior price.
+        Vehicle.objects.filter(pk=vehicle.pk).update(vinaudit_checked_at=checked)
+        vehicle.vinaudit_checked_at = checked
+        va_logger.warning(
+            "VinAudit unavailable for %s (%s)%s.",
+            vehicle.vin, exc,
+            "; serving the CACHED VinAudit price (stale)" if owns_price else "",
+        )
+        return "served" if owns_price else "unavailable"
 
     _apply_vinaudit(vehicle, sv, source, now)
     return "served"
@@ -407,8 +476,8 @@ def apply_model_to_vehicles(vm: VehicleModel) -> int:
     )
     updated = 0
     for vehicle in vehicles:
-        _link_model(vehicle, vm)
-        updated += 1
+        if _link_model(vehicle, vm):
+            updated += 1
     return updated
 
 

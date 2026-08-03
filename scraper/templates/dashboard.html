@@ -46,6 +46,12 @@
     .btn:hover{filter:brightness(1.07);}
     .btn:disabled{opacity:.6; cursor:default;}
     .hint{color:var(--mut); font-size:12.5px; text-align:center; margin-top:12px;}
+    /* Paid VinAudit lookup: distinct amber button + cost warning */
+    .vabox{margin-top:14px; padding-top:14px; border-top:1px dashed var(--line); text-align:center;}
+    .btn.va{width:100%; padding:14px 0; color:#1a1206;
+      background:linear-gradient(90deg,#f59e0b,#fb923c);}
+    .va-note{color:#fcd34d; font-size:12.5px; margin-top:9px; line-height:1.45;}
+    .va-note b{color:#fde68a;}
     /* result */
     #out{margin-top:26px;}
     .fade{animation:fade .45s ease both;}
@@ -117,6 +123,16 @@
         <button class="btn" onclick="lookupModel()">Valorar</button>
       </div>
 
+      {% if vinaudit_enabled %}
+      <!-- Paid, precise per-VIN valuation from VinAudit (VIN mode only). Shown only
+           when VinAudit is actually usable (API key + active source). -->
+      <div id="vinauditBox" class="vabox">
+        <button class="btn va" onclick="lookupVinAudit()">Valorar con VinAudit</button>
+        <div class="va-note">⚠️ <b>Consulta de pago:</b> {{ vinaudit_cost_notice }}
+          Usa el botón <b>“Valorar”</b> de arriba para una estimación gratuita.</div>
+      </div>
+      {% endif %}
+
       <div class="hint">Cálculo basado en datos de mercado reales</div>
     </div>
 
@@ -125,6 +141,7 @@
 
 <script>
 const CSRF="{{ csrf_token }}";
+const VA_COST="{{ vinaudit_cost_notice|escapejs }}";
 const money = n => (n==null||n==="") ? "—" : "$"+Math.round(Number(n)).toLocaleString("en-US");
 const out = document.getElementById("out");
 // XSS guards: escape scraped/user text before innerHTML, and only allow http(s)
@@ -144,6 +161,9 @@ function setMode(m){
   const vin=m==="vin";
   segVin.classList.toggle("on",vin); segModel.classList.toggle("on",!vin);
   vinBox.style.display=vin?"flex":"none"; modelBox.style.display=vin?"none":"flex";
+  // The paid VinAudit lookup is VIN-only (and only present when VinAudit is enabled).
+  const vaBox=document.getElementById("vinauditBox");
+  if(vaBox) vaBox.style.display=vin?"":"none";
   out.innerHTML="";
 }
 
@@ -227,15 +247,16 @@ function render(v){
 }
 
 let poll=null;
-async function lookupVin(){
-  clearInterval(poll);
+
+// Read the VIN input; returns "" (and shows an error) if it isn't 17 chars.
+function readVin(){
   const vin=document.getElementById("vin").value.trim().toUpperCase();
-  if(vin.length!==17){ return error("El VIN debe tener 17 caracteres."); }
-  loading("Consultando el valor de tu vehículo…");
-  const {status,data}=await api("/vehicles/lookup/","POST",{vin});
-  if(status===400){ return error(data.detail||"VIN no válido."); }
-  if(data.status==="ready"){ return render(data.vehicle); }
-  // processing: poll until ready, failed, or timeout
+  if(vin.length!==17){ error("El VIN debe tener 17 caracteres."); return ""; }
+  return vin;
+}
+
+// Poll the VIN's status until a price is ready, the job fails, or we time out.
+function pollVin(vin){
   loading("Estamos calculando el precio de mercado, un momento…");
   let tries=0;
   poll=setInterval(async()=>{
@@ -248,6 +269,36 @@ async function lookupVin(){
       error("No hemos podido obtener el precio de este vehículo. Puede que su modelo no esté disponible en nuestra fuente.");
     }
   },3000);
+}
+
+async function lookupVin(){
+  clearInterval(poll);
+  const vin=readVin(); if(!vin) return;
+  loading("Consultando el valor de tu vehículo…");
+  const {status,data}=await api("/vehicles/lookup/","POST",{vin});
+  if(status===400){ return error(data.detail||"VIN no válido."); }
+  if(data.status==="ready"){ return render(data.vehicle); }
+  pollVin(vin);  // processing: wait for the free sources
+}
+
+// Paid, precise per-VIN valuation from VinAudit — explicit opt-in + cost warning.
+async function lookupVinAudit(){
+  clearInterval(poll);
+  const vin=readVin(); if(!vin) return;
+  if(!confirm(VA_COST + " ¿Deseas continuar?")) return;
+  // Disable the button while the (paid) request is in flight to prevent a second
+  // click from firing a second charge.
+  const vaBtn=document.querySelector(".btn.va"); if(vaBtn) vaBtn.disabled=true;
+  loading("Consultando el valor con VinAudit…");
+  try {
+    const {status,data}=await api("/vehicles/lookup/","POST",{vin, use_vinaudit:true});
+    if(status===400){ return error((data&&data.detail)||"VIN no válido."); }
+    if(data && data.status==="ready" && data.vehicle){ return render(data.vehicle); }
+    // VinAudit-only: NO fallback a las fuentes gratis — muestra el error y no hace polling.
+    return error((data&&data.detail)||"No se pudo obtener el valor con VinAudit para este VIN.");
+  } finally {
+    if(vaBtn) vaBtn.disabled=false;
+  }
 }
 
 async function lookupModel(){

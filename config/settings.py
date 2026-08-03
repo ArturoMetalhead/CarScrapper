@@ -29,6 +29,11 @@ for _env_file in (BASE_DIR / f".env.{DJANGO_ENV}", BASE_DIR / ".env"):
 SECRET_KEY = env("SECRET_KEY", default="dev-insecure-change-me")
 DEBUG = env("DEBUG")
 ALLOWED_HOSTS = env("ALLOWED_HOSTS")
+# Always allow loopback so the container HEALTHCHECK (which curls 127.0.0.1) isn't
+# rejected with 400 DisallowedHost under a domain-only production ALLOWED_HOSTS.
+for _loopback in ("127.0.0.1", "localhost"):
+    if _loopback not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append(_loopback)
 
 # Fail hard in PRODUCTION if SECRET_KEY was left at an insecure placeholder — a
 # known key lets anyone forge sessions / signed cookies / password-reset tokens.
@@ -89,6 +94,8 @@ TEMPLATES = [
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
+                # Exposes VINAUDIT_COST_NOTICE to templates (paid-button warning).
+                "scraper.context_processors.vinaudit",
             ],
         },
     },
@@ -172,6 +179,8 @@ REST_FRAMEWORK = {
         "rest_framework.throttling.AnonRateThrottle",
     ],
     "DEFAULT_THROTTLE_RATES": {
+        # Applies to FREE lookups only (the paid VinAudit lookup is uncapped —
+        # see FreeLookupThrottle).
         "anon": "60/min",
     },
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
@@ -273,6 +282,13 @@ VINAUDIT_TTL_DAYS = env.int("VINAUDIT_TTL_DAYS", default=30)
 # Log a WARNING when a VinAudit response takes longer than this many seconds
 # (to spot the API degrading before it fully fails).
 VINAUDIT_SLOW_SECONDS = env.int("VINAUDIT_SLOW_SECONDS", default=8)
+# Customer-facing notice on the paid VinAudit button — put the amount here, e.g.
+# "Cada búsqueda con VinAudit cuesta $0.50 por uso." Shown in the dashboard warning
+# and the confirm dialog before the (billable) lookup runs.
+VINAUDIT_COST_NOTICE = env(
+    "VINAUDIT_COST_NOTICE",
+    default="Cada búsqueda con VinAudit tiene un costo por uso.",
+)
 
 # Timeout for NHTSA VIN decoding.
 SCRAPER_VIN_DECODE_TIMEOUT = env.int("SCRAPER_VIN_DECODE_TIMEOUT", default=15)
@@ -336,7 +352,11 @@ SCRAPER_WEBHOOK_TIMEOUT = env.int("SCRAPER_WEBHOOK_TIMEOUT", default=10)
 # Level for the app's own loggers ("scraper.*", incl. "scraper.vinaudit"). Set
 # SCRAPER_LOG_LEVEL=DEBUG to also see requests/cache-hits/latency; INFO (default)
 # shows queries, prices and failures; WARNING shows only degradations/errors.
-SCRAPER_LOG_LEVEL = env("SCRAPER_LOG_LEVEL", default="INFO")
+# Normalized + validated: a lowercase/empty value would crash dictConfig at startup
+# ("Unknown level"), so uppercase it and fall back to INFO if it isn't a real level.
+SCRAPER_LOG_LEVEL = env("SCRAPER_LOG_LEVEL", default="INFO").strip().upper()
+if SCRAPER_LOG_LEVEL not in ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"):
+    SCRAPER_LOG_LEVEL = "INFO"
 
 # Django applies DEFAULT_LOGGING first, then this on top (disable_existing_loggers
 # False), so we only ADD an always-on console handler + our app logger. The Django

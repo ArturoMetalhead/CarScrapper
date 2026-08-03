@@ -10,7 +10,29 @@ from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAdminUser
 from rest_framework.response import Response
+from rest_framework.throttling import AnonRateThrottle
+from rest_framework.fields import BooleanField
 from rest_framework.views import APIView
+
+
+class FreeLookupThrottle(AnonRateThrottle):
+    """The standard anonymous cap (60/min), applied ONLY to FREE lookups.
+
+    The PAID VinAudit lookup (use_vinaudit=true) is intentionally NOT rate-limited —
+    a deliberate, billable action is never blocked. (Its cost is bounded only by the
+    30-day per-VIN cache; each distinct VIN bills.)
+    """
+
+    def allow_request(self, request, view):
+        try:
+            # Parse use_vinaudit the SAME way the serializer/view does. Otherwise a
+            # string like "false"/"0" reads as truthy here (skipping the cap) while the
+            # view's BooleanField parses it to False and runs a FREE, uncapped lookup.
+            if request.data.get("use_vinaudit") in BooleanField.TRUE_VALUES:
+                return True  # genuine paid lookup: no cap
+        except Exception:  # noqa: BLE001 — unparseable body -> treat as a free lookup
+            pass
+        return super().allow_request(request, view)
 
 
 class RecentPagination(PageNumberPagination):
@@ -30,7 +52,13 @@ from .serializers import (
     VinBatchSerializer,
     VinLookupSerializer,
 )
-from .services import STATUS_READY, VinDecodeError, resolve_model, resolve_vin
+from .services import (
+    STATUS_READY,
+    VinAuditLookupError,
+    VinDecodeError,
+    resolve_model,
+    resolve_vin,
+)
 
 logger = logging.getLogger("scraper.worker")
 
@@ -72,11 +100,13 @@ class VehicleLookupView(APIView):
     - If the market data is cached and fresh -> 200 with the vehicle.
     - Otherwise -> decode the VIN (NHTSA), enqueue the per-model scraping and
       respond 202 "processing". When the worker finishes it notifies via webhook;
-      meanwhile the frontend can poll GET /api/vehicles/<vin>/.
+      meanwhile the frontend can poll GET /api/vehicles/<vin>/status/ (public).
     """
 
     authentication_classes = []  # public: no session → no CSRF gate for customers
     permission_classes = [AllowAny]  # customer-facing search
+    # Anon cap on FREE lookups only; the paid VinAudit lookup is uncapped.
+    throttle_classes = [FreeLookupThrottle]
 
     @extend_schema(request=VinLookupSerializer, responses=VehicleSerializer)
     def post(self, request):
@@ -84,13 +114,29 @@ class VehicleLookupView(APIView):
         payload.is_valid(raise_exception=True)
         vin = payload.validated_data["vin"]
         webhook_url = payload.validated_data.get("webhook_url", "")
-        # force triggers a paid VinAudit re-query bypassing the cache — staff only.
+        # force triggers a re-query bypassing the cache — staff only.
         force = payload.validated_data.get("force", False) and _request_is_staff(request)
+        # VinAudit (paid, per-VIN) is queried ONLY when explicitly opted in from its
+        # own button; the normal search uses the free sources (Edmunds/CarGurus).
+        # It is VinAudit-ONLY: on failure it errors instead of falling back (vinaudit_only).
+        use_vinaudit = payload.validated_data.get("use_vinaudit", False)
 
         try:
-            vehicle, state, job = resolve_vin(vin, webhook_url=webhook_url, force=force)
+            vehicle, state, job = resolve_vin(
+                vin, webhook_url=webhook_url, force=force,
+                allow_vinaudit=use_vinaudit, vinaudit_only=use_vinaudit,
+            )
         except VinDecodeError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except VinAuditLookupError as exc:
+            # Paid VinAudit lookup failed and must NOT fall back to the free sources.
+            if exc.reason == "no_data":
+                detail = "VinAudit no tiene un valor de mercado para este VIN."
+                code = status.HTTP_404_NOT_FOUND
+            else:  # 'unavailable'
+                detail = "El servicio VinAudit no está disponible en este momento. Inténtalo más tarde."
+                code = status.HTTP_503_SERVICE_UNAVAILABLE
+            return Response({"status": "error", "detail": detail}, status=code)
 
         data = VehicleSerializer(vehicle).data
         if state == STATUS_READY:
@@ -105,7 +151,7 @@ class VehicleLookupView(APIView):
                     "Market data in progress. You will be notified via webhook when "
                     "ready; you can also look up the VIN later."
                 ),
-                "poll_url": request.build_absolute_uri(f"/api/vehicles/{vin}/"),
+                "poll_url": request.build_absolute_uri(f"/api/vehicles/{vin}/status/"),
             },
             status=status.HTTP_202_ACCEPTED,
         )
@@ -236,7 +282,9 @@ class VehicleListView(ListAPIView):
 
     permission_classes = [IsAdminUser]  # enumerates all VINs/prices — ops only
     throttle_classes = []
-    queryset = Vehicle.objects.order_by("-updated_at")
+    # select_related avoids N+1 (source_name + market_updated_at deref source/vehicle_model
+    # per row) on the panel's 8s poll.
+    queryset = Vehicle.objects.select_related("source", "vehicle_model").order_by("-updated_at")
     serializer_class = VehicleSerializer
     pagination_class = RecentPagination
 

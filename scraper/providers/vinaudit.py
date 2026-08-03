@@ -146,8 +146,16 @@ class VinAuditProvider(BaseProvider):
             raise ScraperError(f"VinAudit HTTP {status} for {label}.") from exc
         except requests.RequestException as exc:
             elapsed = time.monotonic() - start
-            logger.warning("VinAudit network error for %s after %.2fs: %s", label, elapsed, exc)
-            raise ScraperError(f"VinAudit request failed for {label}: {exc}") from exc
+            # Do NOT log/embed the raw exception: for connection errors `requests`
+            # includes the request URL — which carries ?key=<API_KEY> — in its message.
+            # Log/raise only the exception TYPE so the key never lands in logs.
+            logger.warning(
+                "VinAudit network error (%s) for %s after %.2fs.",
+                type(exc).__name__, label, elapsed,
+            )
+            raise ScraperError(
+                f"VinAudit request failed for {label}: {type(exc).__name__}"
+            ) from exc
 
         elapsed = time.monotonic() - start
         slow = getattr(settings, "VINAUDIT_SLOW_SECONDS", 8)
